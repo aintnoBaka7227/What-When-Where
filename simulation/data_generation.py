@@ -294,6 +294,8 @@ def gcrs_to_oe(gcrs):
 def coe_to_eq_oe(coe):
     """
     Convert classical orbital elements to equinoctial orbital elements.
+    equinoctial elements are used by the propagator because they avoid singularities
+    at zero eccentricity(circular orbit e = 0) and zero inclination(i=0).
 
     Classical input:
         [rp, e, i, ohm, omega, v]
@@ -556,7 +558,7 @@ def radec_to_point(radec):
 if __name__ == "__main__":
     # Choose which random orbit family to generate. Change this to 'b', 'c',
     # or 'd' to use the other eccentricity/perigee-radius ranges below.
-    test_case = 'a'
+    test_case = 'b'
 
     # Output file. The script opens this in append mode later, so repeated runs
     # add rows instead of replacing old rows.
@@ -566,42 +568,34 @@ if __name__ == "__main__":
     #   [rp, e, i, ohm, omega, v]
     # where rp is perigee radius, e is eccentricity, i is inclination,
     # ohm is RAAN, omega is argument of perigee, and v is true anomaly.
-    if test_case == 'a': #different orbital test cases
-        # Nearly circular, lower-altitude orbit family.
+    if test_case == 'a': # nearly circular orbital test case
+        # Perigee radius 6880-8380 km; eccentricity 0-0.01.
         coe_oe = np.array([np.random.uniform(6880, 8380),
-                        # 1e-8, 1e-8,  # Circular orbit
                         np.random.uniform(0, 0.01), #e
-                        # 0,
                         np.random.uniform(np.deg2rad(1), np.deg2rad(179)), #i
                         np.random.uniform(0, 2 * np.pi), #ohm
                         np.random.uniform(0, 2 * np.pi), #omega
                         np.random.uniform(0, 2 * np.pi)]) #v
     elif test_case == 'b':
-        # Mildly eccentric orbit family.
+        # Perigee radius 8380-9380 km; eccentricity 0.01-0.2.
         coe_oe = np.array([np.random.uniform(8380, 9380),
-                            # 1e-8, 1e-8,  # Circular orbit
                             np.random.uniform(0.01, 0.2),  # e
-                            # 0,
                             np.random.uniform(np.deg2rad(1), np.deg2rad(179)),  # i
                             np.random.uniform(0, 2 * np.pi),  # ohm
                             np.random.uniform(0, 2 * np.pi),  # omega
                             np.random.uniform(0, 2 * np.pi)])  # v
     elif test_case == 'c':
-        # Moderately eccentric orbit family.
+        # Perigee radius 8380-9380 km; eccentricity 0.2-0.4.
         coe_oe = np.array([np.random.uniform(8380, 9380),
-                            # 1e-8, 1e-8,  # Circular orbit
                             np.random.uniform(0.2, 0.4),  # e
-                            # 0,
                             np.random.uniform(np.deg2rad(1), np.deg2rad(179)),  # i
                             np.random.uniform(0, 2 * np.pi),  # ohm
                             np.random.uniform(0, 2 * np.pi),  # omega
                             np.random.uniform(0, 2 * np.pi)])  # v
     elif test_case == 'd':
-        # More eccentric orbit family.
+        # Perigee radius 8380-9380 km; eccentricity 0.4-0.6.
         coe_oe = np.array([np.random.uniform(8380, 9380),
-                            # 1e-8, 1e-8,  # Circular orbit
                             np.random.uniform(0.4, 0.6),  # e
-                            # 0,
                             np.random.uniform(np.deg2rad(1), np.deg2rad(179)),  # i
                             np.random.uniform(0, 2 * np.pi),  # ohm
                             np.random.uniform(0, 2 * np.pi),  # omega
