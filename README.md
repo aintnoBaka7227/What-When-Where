@@ -1,6 +1,6 @@
 # What When Where
 
-This project contains a Python script, `data_generation (1).py`, that generates synthetic satellite observation data. It creates a random orbit, propagates that orbit forward in time, places a few synthetic observing sites on Earth, and writes the satellite state and line-of-sight pointing measurements to a text file.
+This project contains a Python script, `data_generation.py`, that generates synthetic satellite observation data. It creates a random orbit, propagates that orbit forward in time, places a few synthetic observing sites on Earth, and writes the satellite state and line-of-sight pointing measurements to a text file.
 
 ## Dependencies
 
