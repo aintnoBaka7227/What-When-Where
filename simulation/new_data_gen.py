@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 from numba import jit
 from scipy.spatial.transform import Rotation as R
@@ -8,7 +10,8 @@ from astropy.time import Time
 from astropy.utils import iers
 
 
-iers.conf.auto_download = False
+iers.conf.auto_download = True
+iers.conf.auto_max_age = None
 
 
 # Astropy stores these constants in SI units:
@@ -563,49 +566,66 @@ def radec_to_point(radec):
 if __name__ == "__main__":
     # Keep all four orbit choices; use near-GEO option A for now.
     test_case = 'a'
-    output_dir = 'generated_data.txt'
+    this_dir = Path(__file__).resolve().parent
+    output_file = this_dir / 'generated_data.txt'
+    rng = np.random.default_rng(42)
 
     if test_case == 'a':
         # Near-GEO: choose semi-major axis first, then convert it to perigee.
-        semi_major_axis = np.random.uniform(38000, 45000)
-        eccentricity = np.random.uniform(0, 0.01)
+        semi_major_axis = rng.uniform(38000, 45000)
+        eccentricity = rng.uniform(0, 0.01)
         perigee_radius = semi_major_axis * (1 - eccentricity)
         coe_oe = np.array([
             perigee_radius,
             eccentricity,
-            np.random.uniform(np.deg2rad(1), np.deg2rad(179)),
-            np.random.uniform(0, 2 * np.pi),
-            np.random.uniform(0, 2 * np.pi),
-            np.random.uniform(0, 2 * np.pi)
+            rng.uniform(np.deg2rad(1), np.deg2rad(179)),
+            rng.uniform(0, 2 * np.pi),
+            rng.uniform(0, 2 * np.pi),
+            rng.uniform(0, 2 * np.pi)
         ])
     elif test_case == 'b':
-        coe_oe = np.array([np.random.uniform(8380, 9380),
-                           np.random.uniform(0.01, 0.2),
-                           np.random.uniform(np.deg2rad(1), np.deg2rad(179)),
-                           np.random.uniform(0, 2 * np.pi),
-                           np.random.uniform(0, 2 * np.pi),
-                           np.random.uniform(0, 2 * np.pi)])
+        coe_oe = np.array([rng.uniform(8380, 9380),
+                           rng.uniform(0.01, 0.2),
+                           rng.uniform(np.deg2rad(1), np.deg2rad(179)),
+                           rng.uniform(0, 2 * np.pi),
+                           rng.uniform(0, 2 * np.pi),
+                           rng.uniform(0, 2 * np.pi)])
     elif test_case == 'c':
-        coe_oe = np.array([np.random.uniform(8380, 9380),
-                           np.random.uniform(0.2, 0.4),
-                           np.random.uniform(np.deg2rad(1), np.deg2rad(179)),
-                           np.random.uniform(0, 2 * np.pi),
-                           np.random.uniform(0, 2 * np.pi),
-                           np.random.uniform(0, 2 * np.pi)])
+        coe_oe = np.array([rng.uniform(8380, 9380),
+                           rng.uniform(0.2, 0.4),
+                           rng.uniform(np.deg2rad(1), np.deg2rad(179)),
+                           rng.uniform(0, 2 * np.pi),
+                           rng.uniform(0, 2 * np.pi),
+                           rng.uniform(0, 2 * np.pi)])
     elif test_case == 'd':
-        coe_oe = np.array([np.random.uniform(8380, 9380),
-                           np.random.uniform(0.4, 0.6),
-                           np.random.uniform(np.deg2rad(1), np.deg2rad(179)),
-                           np.random.uniform(0, 2 * np.pi),
-                           np.random.uniform(0, 2 * np.pi),
-                           np.random.uniform(0, 2 * np.pi)])
+        coe_oe = np.array([rng.uniform(8380, 9380),
+                           rng.uniform(0.4, 0.6),
+                           rng.uniform(np.deg2rad(1), np.deg2rad(179)),
+                           rng.uniform(0, 2 * np.pi),
+                           rng.uniform(0, 2 * np.pi),
+                           rng.uniform(0, 2 * np.pi)])
     else:
         raise ValueError("test_case must be 'a', 'b', 'c', or 'd'")
 
+    # Siminski et al.: tracklets last 1-2 minutes and contain 3-5 measurements.
     num_of_tracklets = 3
-    time_interval_between_tracklets = 120
     points_per_tracklet = 5
-    measurement_interval = 5 / points_per_tracklet
+    measurement_interval = 30.0
+    tracklet_duration = (points_per_tracklet - 1) * measurement_interval
+
+    # The paper studies multiple separation-time groups rather than requiring
+    # one exact gap. Twelve hours selects its less-than-one-day association case.
+    gap_between_tracklets = 12.0 * 60.0 * 60.0
+    tracklet_start_interval = tracklet_duration + gap_between_tracklets
+
+    # Siminski et al. measurement-error cases: relative angular noise of
+    # 0.7, 1.2, or 2.0 arcsec and a 5 arcsec systematic-error test.
+    relative_uncertainty_arcsec = 0.7
+    systematic_uncertainty_arcsec = 5.0
+    arcsec_to_rad = np.deg2rad(1.0 / 3600.0)
+    sigma_relative_rad = relative_uncertainty_arcsec * arcsec_to_rad
+    sigma_systematic_rad = systematic_uncertainty_arcsec * arcsec_to_rad
+
     start_epoch = Time('2026-07-21T00:00:00', scale='utc')
     object_id = 0
 
@@ -614,10 +634,10 @@ if __name__ == "__main__":
 
     # Choose one convenient station near the object's initial direction.
     site_direction = rv_init[0, 0:3] / np.linalg.norm(rv_init[0, 0:3])
-    rot_axis = np.random.uniform(-1.0, 1.0, 3)
+    rot_axis = rng.uniform(-1.0, 1.0, 3)
     rot_axis /= np.linalg.norm(rot_axis)
     site_gcrs_m = R.from_rotvec(
-        np.random.uniform(0.0, np.deg2rad(30.0)) * rot_axis
+        rng.uniform(0.0, np.deg2rad(30.0)) * rot_axis
     ).apply(site_direction) * R_EARTH
 
     # Fix that station to Earth and reuse it for every tracklet.
@@ -631,31 +651,99 @@ if __name__ == "__main__":
     )
 
     raw_rows = []
+    true_angle_rows = []
 
     for tracklet_id in range(num_of_tracklets):
+        # One constant RA bias and one constant Dec bias for this tracklet.
+        ra_systematic_error = rng.normal(0.0, sigma_systematic_rad)
+        dec_systematic_error = rng.normal(0.0, sigma_systematic_rad)
+
         for point_id in range(points_per_tracklet):
             measurement_time = (
-                tracklet_id * time_interval_between_tracklets
+                tracklet_id * tracklet_start_interval
                 + point_id * measurement_interval
             )
 
             r, v = two_body(
-                mu, measurement_time,
-                rv_init[0, 0:3], rv_init[0, 3:6]
+                mu,
+                measurement_time,
+                rv_init[0, 0:3],
+                rv_init[0, 3:6]
             )
 
             epoch = start_epoch + measurement_time * u.s
+
             site_position, site_velocity = site_location.get_gcrs_posvel(epoch)
             site_position_km = site_position.xyz.to_value(u.km)
             site_velocity_km_s = site_velocity.xyz.to_value(u.km / u.s)
 
-            ra, dec = gcrs_to_radec(r - site_position_km)
-            raw_rows.append([
-                *r, *v, ra, dec,
-                *site_position_km, *site_velocity_km_s,
-                measurement_time, tracklet_id, object_id
+            line_of_sight = r - site_position_km
+            ra_true, dec_true = gcrs_to_radec(line_of_sight)
+
+            # Independent relative noise is redrawn for every RA/Dec observation.
+            ra = (
+                ra_true
+                + ra_systematic_error
+                + rng.normal(0.0, sigma_relative_rad)
+            ) % (2.0 * np.pi)
+            dec = (
+                dec_true
+                + dec_systematic_error
+                + rng.normal(0.0, sigma_relative_rad)
+            )
+
+            true_angle_rows.append([
+                ra_true,
+                dec_true,
+                measurement_time,
+                tracklet_id,
+                object_id
             ])
 
-    # Raw tracklet samples only; fit attributables in the separate fitting file.
-    np.savetxt(output_dir, np.asarray(raw_rows), delimiter=',')
+            raw_rows.append([
+                *r,                         # columns 0–2: satellite position
+                *v,                         # columns 3–5: satellite velocity
+                ra,                         # column 6: RA
+                dec,                        # column 7: Dec
+                *site_position_km,          # columns 8–10: station position
+                *site_velocity_km_s,        # columns 11–13: station velocity
+                measurement_time,           # column 14: time
+                tracklet_id,                # column 15: tracklet ID
+                object_id                   # column 16: object ID
+            ])
+
+    generated_data = np.asarray(raw_rows, dtype=np.float64)
+
+    # Canonical calculation file
+    np.savez(
+        this_dir / "generated_data.npz",
+        data=generated_data,
+        true_angles=np.asarray(true_angle_rows, dtype=np.float64),
+        relative_uncertainty_arcsec=np.float64(relative_uncertainty_arcsec),
+        systematic_uncertainty_arcsec=np.float64(systematic_uncertainty_arcsec),
+        random_seed=np.int64(42)
+    )
+
+    np.savetxt(
+        output_file,
+        generated_data,
+        delimiter=",",
+        fmt=[
+            "%f", "%f", "%f",        # satellite position (km)
+            "%f", "%f", "%f",        # satellite velocity (km/s)
+            "%f", "%f",              # RA and Dec (rad)
+            "%f", "%f", "%f",        # station position (km)
+            "%f", "%f", "%f",        # station velocity (km/s)
+            "%f",                         # measurement time (s)
+            "%d", "%d"                      # tracklet and object IDs
+        ],
+        header=(
+            "truth_rx_km,truth_ry_km,truth_rz_km,"
+            "truth_vx_km_s,truth_vy_km_s,truth_vz_km_s,"
+            "ra_rad,dec_rad,"
+            "site_x_km,site_y_km,site_z_km,"
+            "site_vx_km_s,site_vy_km_s,site_vz_km_s,"
+            "time_s,tracklet_id,object_id"
+        )
+)
                 
