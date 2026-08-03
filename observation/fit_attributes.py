@@ -1,12 +1,15 @@
 import numpy as np
 
 
-def fit_attributable(
+# A tracklet is a short sequence of angular observations of one object.
+# This function replaces that sequence with an attributable: the fitted
+# direction and angular rate at one reference epoch.
+def fit_attributes(
     times,
     ra,
     dec,
-    relative_uncertainty_arcsec=0.7,
-    systematic_uncertainty_arcsec=5.0
+    relative_uncertainty_arcsec,
+    systematic_uncertainty_arcsec
 ):
     """
     Fit the attributable vector used by Siminski et al.
@@ -67,7 +70,8 @@ def fit_attributable(
     dec = np.asarray(dec, dtype=float)
 
     # RA is a periodic angle. Unwrapping prevents a crossing from 2*pi to zero
-    # from appearing as a large negative angular movement.
+    # from appearing as a large negative angular movement. The fitted alpha may
+    # consequently lie outside [0, 2*pi), but it remains angularly equivalent.
     ra = np.unwrap(ra)
 
     # Use the mean observation time as the reference epoch.
@@ -98,6 +102,9 @@ def fit_attributable(
     #
     #     beta_ra[0] = alpha
     #     beta_ra[1] = alpha_dot
+    #
+    # lstsq returns the intercept and slope that minimize the sum of squared
+    # residuals between the observations and the linear model.
     beta_ra = np.linalg.lstsq(X, ra, rcond=None)[0]
 
     # Fit declination:
@@ -128,6 +135,11 @@ def fit_attributable(
     #     C_beta[1, 1] = variance of fitted angular rate
     #
     # The off-diagonal entries represent angle-rate covariance.
+    #
+    # Since dt is measured in seconds, the resulting entries have units:
+    #   C[0,0] = rad^2
+    #   C[0,1] = C[1,0] = rad^2/s
+    #   C[1,1] = rad^2/s^2
     fit_geometry_covariance = np.linalg.inv(X.T @ X)
 
     cov_ra = sigma_relative**2 * fit_geometry_covariance
@@ -166,4 +178,6 @@ def fit_attributable(
     Ca[0:2, 0:2] = cov_ra
     Ca[2:4, 2:4] = cov_dec
 
+    # Return the fitted attributable, its uncertainty, and the epoch at which
+    # the fitted angular positions alpha and delta are defined.
     return a, Ca, t0
