@@ -1,4 +1,0 @@
-object_id_1,tracklet_id_1,object_id_2,tracklet_id_2,delta_t_s,k_min,k_max
-0,0,0,1,43320.000,0.0,0.5
-0,0,0,2,86640.000,0.5,1.0
-0,1,0,2,43320.000,0.0,0.5

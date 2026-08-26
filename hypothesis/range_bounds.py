@@ -23,15 +23,68 @@ import numpy as np
 
 
 THIS_DIR = Path(__file__).resolve().parent
-GENERATED_DATA_FILE = THIS_DIR.parent / "simulation" / "generated_data.npz"
-ATTRIBUTABLES_FILE = THIS_DIR.parent / "observation" / "generated_attributables.npz"
-PRECISION_OUTPUT_FILE = THIS_DIR / "range_bounds.npz"
-READABLE_OUTPUT_FILE = THIS_DIR / "range_bounds.txt"
 
-# Near-GEO population limits used in the paper's test case.
+# simulation/new_data_gen.py generates two datasets from one orbit, one set of
+# stations and one set of epochs: "clean" carries the exact angles, "noisy"
+# carries the same angles with Siminski measurement error applied. Every stage
+# from here down runs both as two independent chains, so a result can always be
+# compared against its own noise-free counterpart.
+#
+# This module is the path authority for the whole pipeline: the later stages
+# import these dictionaries rather than building paths themselves.
+VARIANTS = ("clean", "noisy")
+
+GENERATED_DATA_FILES = {
+    variant: THIS_DIR.parent / "simulation" / f"generated_data_{variant}.npz"
+    for variant in VARIANTS
+}
+
+ATTRIBUTABLES_FILES = {
+    variant: THIS_DIR.parent / "observation" / f"generated_attributables_{variant}.npz"
+    for variant in VARIANTS
+}
+
+PRECISION_OUTPUT_FILES = {
+    variant: THIS_DIR / f"range_bounds_{variant}.npz"
+    for variant in VARIANTS
+}
+
+READABLE_OUTPUT_FILES = {
+    variant: THIS_DIR / f"range_bounds_{variant}.txt"
+    for variant in VARIANTS
+}
+
+# Fallback population limits, for datasets generated before
+# simulation/new_data_gen.py began recording its own. Everything below
+# goes through population_for() instead: E_MAX = 0.01 describes test case
+# 'a' alone, and applying it to an eccentric population silently puts the
+# true range outside the region the optimizer may search.
 A_MIN = 38_000.0
 A_MAX = 45_000.0
 E_MAX = 0.01
+
+
+def population_for(variant):
+    """The orbit population a dataset was actually generated from.
+
+    simulation/new_data_gen.py records the semi-major axis and eccentricity
+    limits its test case sampled, so the admissible region (Eqs. 23-24)
+    follows the data rather than being pinned to one case. Datasets written
+    before those keys existed fall back to the module constants.
+
+    Returns
+    -------
+    a_min, a_max, e_max : float
+    """
+    with np.load(GENERATED_DATA_FILES[variant]) as archive:
+        if "a_min_km" not in archive:
+            return A_MIN, A_MAX, E_MAX
+
+        return (
+            float(archive["a_min_km"]),
+            float(archive["a_max_km"]),
+            float(archive["e_max"]),
+        )
 
 
 def calculate_r_min_r_max(
@@ -118,18 +171,65 @@ def r_s_i_at_epoch(
     return r_s_i
 
 
-def main():
-    """Calculate the Siminski range bounds for every fitted tracklet."""
-    with np.load(GENERATED_DATA_FILE) as archive:
+def v_s_i_at_epoch(
+    data,
+    object_id,
+    tracklet_id,
+    t0_i,
+):
+    """Obtain the observing-site velocity v_s_i at attributable epoch t0_i.
+
+    Sibling to r_s_i_at_epoch, used by modelled/model_rates.py to form
+    the topocentric relative velocity rho_dot = v_sat - v_s needed for
+    Eq. (17)'s modeled angular rates. Not needed by this file's own range
+    bounds (Eqs. 26-28), which only use site position.
+    """
+    object_ids = data[:, 16].astype(int)
+    tracklet_ids = data[:, 15].astype(int)
+
+    tracklet_i = data[
+        (object_ids == object_id)
+        & (tracklet_ids == tracklet_id)
+    ]
+
+    order = np.argsort(tracklet_i[:, 14])
+    times_i = tracklet_i[order, 14]
+    v_s_observations_i = tracklet_i[order, 11:14]
+
+    v_s_i = np.array([
+        np.interp(
+            t0_i,
+            times_i,
+            v_s_observations_i[:, axis],
+        )
+        for axis in range(3)
+    ])
+
+    return v_s_i
+
+
+def build_range_bounds(variant):
+    """Calculate the Siminski range bounds for every fitted tracklet.
+
+    Parameters
+    ----------
+    variant : str
+        Which dataset chain to process, "clean" or "noisy". Only the
+        attributables differ between the two -- the site positions are
+        shared -- but each chain writes its own bounds file so the stages
+        below never have to know which one they are working on.
+    """
+    with np.load(GENERATED_DATA_FILES[variant]) as archive:
         data = archive["data"]
 
-    with np.load(ATTRIBUTABLES_FILE) as archive:
+    with np.load(ATTRIBUTABLES_FILES[variant]) as archive:
         object_ids = archive["object_id"]
         tracklet_ids = archive["tracklet_id"]
         t0_values = archive["t0"]
         attributables = archive["attributable"]
 
-    r_min, r_max = calculate_r_min_r_max()
+    a_min, a_max, e_max = population_for(variant)
+    r_min, r_max = calculate_r_min_r_max(a_min, a_max, e_max)
 
     saved_r_s_i = []
     saved_u_i = []
@@ -178,7 +278,7 @@ def main():
 
     # Full-precision output for later optimisation.
     np.savez(
-        PRECISION_OUTPUT_FILE,
+        PRECISION_OUTPUT_FILES[variant],
         object_id=object_ids,
         tracklet_id=tracklet_ids,
         t0=t0_values,
@@ -187,9 +287,9 @@ def main():
         c_i_km=c_i_array,
         rho_min_i_km=rho_min_i_array,
         rho_max_i_km=rho_max_i_array,
-        a_min_km=A_MIN,
-        a_max_km=A_MAX,
-        e_max=E_MAX,
+        a_min_km=a_min,
+        a_max_km=a_max,
+        e_max=e_max,
         r_min_km=r_min,
         r_max_km=r_max,
     )
@@ -207,7 +307,7 @@ def main():
     ))
 
     np.savetxt(
-        READABLE_OUTPUT_FILE,
+        READABLE_OUTPUT_FILES[variant],
         readable_rows,
         delimiter=",",
         fmt=[
@@ -234,6 +334,9 @@ def main():
     )
 
     print(
+        f"population a in [{a_min:.0f}, {a_max:.0f}] km, e <= {e_max}"
+    )
+    print(
         f"||r_min|| = {r_min:.3f} km, "
         f"||r_max|| = {r_max:.3f} km"
     )
@@ -250,8 +353,34 @@ def main():
             f"rho_max_i = {rho_max_i:.3f} km"
         )
 
-    print(f"Wrote precise bounds to {PRECISION_OUTPUT_FILE}")
-    print(f"Wrote readable bounds to {READABLE_OUTPUT_FILE}")
+    print(f"Wrote precise bounds to {PRECISION_OUTPUT_FILES[variant]}")
+    print(f"Wrote readable bounds to {READABLE_OUTPUT_FILES[variant]}")
+
+
+def available_variants():
+    """The variants whose inputs are both present on disk.
+
+    Each stage skips a variant it cannot run rather than failing outright,
+    so regenerating one chain never blocks the other.
+    """
+    return [
+        variant
+        for variant in VARIANTS
+        if GENERATED_DATA_FILES[variant].exists()
+        and ATTRIBUTABLES_FILES[variant].exists()
+    ]
+
+
+def main():
+    """Calculate range bounds for the clean and the noisy chain."""
+    for variant in VARIANTS:
+        if variant not in available_variants():
+            print(f"Skipping {variant}: inputs missing")
+            continue
+
+        print(f"--- {variant} ---")
+        build_range_bounds(variant)
+        print()
 
 
 if __name__ == "__main__":

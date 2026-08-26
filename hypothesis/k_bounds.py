@@ -16,7 +16,7 @@ module computes both raw values and takes min()/max() to form the actual
 [k_min, k_max] range iterated over in Eq. (30), rather than trusting the
 paper's variable names literally.
 
-k is the same parameter consumed by dynamic/lambert.py's
+k is the same parameter consumed by orbit/lambert.py's
 lambert_boundary_value(): its integer part is the number of full
 revolutions M, and its fractional part (0 or 0.5) selects the short-way or
 long-way transfer.
@@ -28,12 +28,25 @@ from pathlib import Path
 import numpy as np
 from astropy.constants import GM_earth
 
-from range_bounds import A_MIN, A_MAX
+from range_bounds import A_MIN, A_MAX, VARIANTS, ATTRIBUTABLES_FILES, population_for
 
 THIS_DIR = Path(__file__).resolve().parent
-ATTRIBUTABLES_FILE = THIS_DIR.parent / "observation" / "generated_attributables.npz"
-PRECISION_OUTPUT_FILE = THIS_DIR / "k_bounds.npz"
-READABLE_OUTPUT_FILE = THIS_DIR / "k_bounds.txt"
+
+# One k-bounds file per dataset chain, matching hypothesis/range_bounds.py.
+# The k bounds depend only on the attributable epochs t0, which the clean and
+# noisy datasets share exactly, so the two files come out identical in
+# practice. They are still written separately: it keeps each chain
+# self-contained, and it stops being true the moment the two chains are
+# generated from different observation schedules.
+PRECISION_OUTPUT_FILES = {
+    variant: THIS_DIR / f"k_bounds_{variant}.npz"
+    for variant in VARIANTS
+}
+
+READABLE_OUTPUT_FILES = {
+    variant: THIS_DIR / f"k_bounds_{variant}.txt"
+    for variant in VARIANTS
+}
 
 # km^3/s^2, matches simulation/new_data_gen.py's unit convention.
 MU = GM_earth.value / 1_000_000_000.0
@@ -84,15 +97,25 @@ def k_grid(k_min, k_max):
     return [k_min + 0.5 * i for i in range(n_steps + 1)]
 
 
-def main():
+def build_k_bounds(variant):
     """Calculate k bounds for every pair of tracklets in the attributables file.
 
     All unordered pairs are considered, not just pairs within the same
     object, matching the paper's all-vs-all association test (Section 6.1):
     a real association pipeline does not know in advance which tracklets
     belong together.
+
+    Parameters
+    ----------
+    variant : str
+        Which dataset chain to process, "clean" or "noisy".
     """
-    with np.load(ATTRIBUTABLES_FILE) as archive:
+    # The same population the range bounds use. k comes from the orbital
+    # period, so only the semi-major axis limits matter here -- eccentricity
+    # does not enter Kepler's third law.
+    a_min, a_max, _ = population_for(variant)
+
+    with np.load(ATTRIBUTABLES_FILES[variant]) as archive:
         object_ids = archive["object_id"]
         tracklet_ids = archive["tracklet_id"]
         t0_values = archive["t0"]
@@ -105,7 +128,16 @@ def main():
         # signed value here would misleadingly suggest k_min/k_max (always
         # >= 0) were computed from a negative time interval.
         delta_t = abs(t0_values[j] - t0_values[i])
-        k_min, k_max = calculate_k_bounds(delta_t)
+
+        # Two tracklets at the same epoch cannot be associated via
+        # Lambert's problem, which requires two distinct epochs. This can
+        # legitimately happen once multiple objects are simulated: every
+        # object shares the same start_epoch, so e.g. object 0's tracklet 0
+        # and object 1's tracklet 0 land at identical absolute times.
+        if delta_t == 0.0:
+            continue
+
+        k_min, k_max = calculate_k_bounds(delta_t, a_min, a_max)
 
         pair_rows.append([
             object_ids[i], tracklet_ids[i],
@@ -116,7 +148,7 @@ def main():
     pair_rows = np.asarray(pair_rows, dtype=np.float64)
 
     np.savez(
-        PRECISION_OUTPUT_FILE,
+        PRECISION_OUTPUT_FILES[variant],
         object_id_1=pair_rows[:, 0].astype(int),
         tracklet_id_1=pair_rows[:, 1].astype(int),
         object_id_2=pair_rows[:, 2].astype(int),
@@ -124,12 +156,12 @@ def main():
         delta_t_s=pair_rows[:, 4],
         k_min=pair_rows[:, 5],
         k_max=pair_rows[:, 6],
-        a_min_km=A_MIN,
-        a_max_km=A_MAX,
+        a_min_km=a_min,
+        a_max_km=a_max,
     )
 
     np.savetxt(
-        READABLE_OUTPUT_FILE,
+        READABLE_OUTPUT_FILES[variant],
         pair_rows,
         delimiter=",",
         fmt=["%d", "%d", "%d", "%d", "%.3f", "%.1f", "%.1f"],
@@ -149,8 +181,20 @@ def main():
             f"delta_t={delta_t:.1f}s, k in {grid}"
         )
 
-    print(f"Wrote precise bounds to {PRECISION_OUTPUT_FILE}")
-    print(f"Wrote readable bounds to {READABLE_OUTPUT_FILE}")
+    print(f"Wrote precise bounds to {PRECISION_OUTPUT_FILES[variant]}")
+    print(f"Wrote readable bounds to {READABLE_OUTPUT_FILES[variant]}")
+
+
+def main():
+    """Calculate k bounds for the clean and the noisy chain."""
+    for variant in VARIANTS:
+        if not ATTRIBUTABLES_FILES[variant].exists():
+            print(f"Skipping {variant}: {ATTRIBUTABLES_FILES[variant]} does not exist")
+            continue
+
+        print(f"--- {variant} ---")
+        build_k_bounds(variant)
+        print()
 
 
 if __name__ == "__main__":
