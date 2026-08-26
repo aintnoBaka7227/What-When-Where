@@ -5,12 +5,49 @@ import numpy as np
 from fit_attributes import fit_attributes
 
 THIS_DIR = Path(__file__).resolve().parent
-GENERATED_DATA_FILE = THIS_DIR.parent / "simulation" / "generated_data.npz"
-ATTRIBUTABLES_NPZ_FILE = THIS_DIR / "generated_attributables.npz"
-ATTRIBUTABLES_TXT_FILE = THIS_DIR / "generated_attributables.txt"
+SIMULATION_DIR = THIS_DIR.parent / "simulation"
+
+# simulation/new_data_gen.py writes its clean and noisy datasets together from
+# one orbit, one set of stations and one set of observation epochs. The only
+# columns that differ between them are the measured RA/Dec pair, so both are
+# fitted here by the same code with the same tracklet grouping, and the two
+# sets of attributables stay directly comparable row for row.
+#
+# Each entry is (label, generated data, attributables npz, attributables txt).
+DATASETS = (
+    (
+        "clean",
+        SIMULATION_DIR / "generated_data_clean.npz",
+        THIS_DIR / "generated_attributables_clean.npz",
+        THIS_DIR / "generated_attributables_clean.txt",
+    ),
+    (
+        "noisy",
+        SIMULATION_DIR / "generated_data_noisy.npz",
+        THIS_DIR / "generated_attributables_noisy.npz",
+        THIS_DIR / "generated_attributables_noisy.txt",
+    ),
+)
 
 
-def main():
+def build_attributables(
+    generated_data_file,
+    attributables_npz_file,
+    attributables_txt_file,
+):
+    """Fit one attributable per tracklet in a generated dataset.
+
+    Parameters
+    ----------
+    generated_data_file : Path
+        A simulation/new_data_gen.py dataset, clean or noisy.
+
+    attributables_npz_file : Path
+        Destination for the machine-readable attributables.
+
+    attributables_txt_file : Path
+        Destination for the human-readable attributables.
+    """
     # Load the simulated observations and their angular-error settings.
     #
     # The input data matrix is created by simulation/new_data_gen.py. The
@@ -20,7 +57,7 @@ def main():
     #   14 = observation time (s)
     #   15 = tracklet ID
     #   16 = object ID
-    generated = np.load(GENERATED_DATA_FILE)
+    generated = np.load(generated_data_file)
 
     data = generated["data"]
 
@@ -28,6 +65,11 @@ def main():
     # Systematic error represents a common angular offset for the tracklet.
     # Both values are stored in arcseconds and converted to radians by
     # fit_attributes().
+    #
+    # The clean dataset carries zeros here, because no noise was added to it.
+    # Its fitted attributables are still exact, but every covariance it
+    # produces is the zero matrix, so the clean file cannot be used by stages
+    # that invert Ca.
     relative_error = generated["relative_uncertainty_arcsec"]
     systematic_error = generated["systematic_uncertainty_arcsec"]
 
@@ -76,7 +118,7 @@ def main():
     # This is the preferred file for later numerical processing because it
     # preserves integer IDs and the original array shapes.
     np.savez(
-        ATTRIBUTABLES_NPZ_FILE,
+        attributables_npz_file,
         object_id=results[:, 0].astype(int),
         tracklet_id=results[:, 1].astype(int),
         t0=results[:, 2],
@@ -99,7 +141,7 @@ def main():
     # of t0 and the attributable values; covariance units follow from the pair
     # of attributable components represented by each matrix entry.
     np.savetxt(
-        ATTRIBUTABLES_TXT_FILE,
+        attributables_txt_file,
         readable_results,
         delimiter=",",
         fmt=[
@@ -126,6 +168,29 @@ def main():
         ),
         comments="",
     )
+
+    return len(results)
+
+
+def main():
+    """Fit attributables for both the clean and the noisy dataset."""
+    for label, data_file, npz_file, txt_file in DATASETS:
+        # Each dataset is optional: generating only one of the pair, or
+        # deleting one to regenerate it, should not stop the other from
+        # being fitted.
+        if not data_file.exists():
+            print(f"Skipping {label}: {data_file} does not exist")
+            continue
+
+        tracklet_count = build_attributables(
+            data_file,
+            npz_file,
+            txt_file,
+        )
+
+        print(f"Fitted {tracklet_count} {label} tracklets")
+        print(f"  Wrote precise attributables to {npz_file}")
+        print(f"  Wrote readable attributables to {txt_file}")
 
 
 if __name__ == "__main__":
