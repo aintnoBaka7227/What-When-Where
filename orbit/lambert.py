@@ -127,11 +127,18 @@ def lambert_boundary_value(mu, r1, r2, tof, k, numiter=35, rtol=1e-8):
     ------
     LambertNoSolution
         If no two-body transfer connects r1 and r2 in tof at revolution k
-        (e.g. k is outside the feasible range for this geometry, or r1, r2
-        are collinear).
+        (e.g. k is outside the feasible range for this geometry, r1, r2
+        are collinear, or tof <= 0).
     """
     r1 = np.asarray(r1, dtype=np.float64)
     r2 = np.asarray(r2, dtype=np.float64)
+
+    if tof <= 0:
+        # hapsira's core solver only guards this with a bare `assert`,
+        # which raises an unhelpful, uncatchable-by-type AssertionError.
+        # Two tracklets at the same epoch (tof == 0) are never associable
+        # via Lambert's problem, which needs two *distinct* epochs.
+        raise LambertNoSolution(f"tof={tof} must be positive")
 
     M, long_way = k_to_revolutions(k)
     low_path_options = (True,) if M == 0 else (True, False)
@@ -155,84 +162,9 @@ def lambert_boundary_value(mu, r1, r2, tof, k, numiter=35, rtol=1e-8):
     return candidates
 
 
-if __name__ == "__main__":
-    import sys
-    from pathlib import Path
-
-    # --- Sanity check against a published example (Curtis, "Orbital
-    # Mechanics for Engineering Students", Example 5.2; also used as the
-    # docstring example for hapsira.core.iod.vallado). Confirms the wrapper
-    # is wired up correctly, independent of the k-mapping logic below. ---
-    mu_earth = 398600.0  # km^3/s^2, matches the Curtis example
-    r1_curtis = np.array([5000.0, 10000.0, 2100.0])
-    r2_curtis = np.array([-14600.0, 2500.0, 7000.0])
-    tof_curtis = 3600.0
-    expected_v1 = np.array([-5.9925, 1.9254, 3.2456])
-    expected_v2 = np.array([-3.3125, -4.1966, -0.3853])
-
-    (v1, v2), = lambert_boundary_value(mu_earth, r1_curtis, r2_curtis, tof_curtis, k=0.0)
-    assert np.allclose(v1, expected_v1, atol=1e-3), (v1, expected_v1)
-    assert np.allclose(v2, expected_v2, atol=1e-3), (v2, expected_v2)
-    print("Curtis example 5.2 check passed:", v1, v2)
-
-    # --- Round-trip check against this project's own two-body propagator,
-    # in the near-GEO regime and across the k values the paper actually
-    # needs. This exercises the k -> (M, long_way) classification, which
-    # the Curtis check above does not. A perfectly circular, inclined orbit
-    # is used so that revolution boundaries land exactly on whole periods,
-    # while still exercising a non-degenerate (non-equatorial) geometry. ---
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "simulation"))
-    from new_data_gen import two_body, mu as mu_km  # noqa: E402
-
-    rng = np.random.default_rng(0)
-
-    a = rng.uniform(38000.0, 45000.0)
-    period = 2 * np.pi * np.sqrt(a**3 / mu_km)
-
-    incl = np.deg2rad(45.0)
-    r1_geo = np.array([a, 0.0, 0.0])
-    v_circ = np.sqrt(mu_km / a)
-    v1_geo = np.array([0.0, v_circ * np.cos(incl), v_circ * np.sin(incl)])
-
-    # Fractions below 0.5 sweep a true-anomaly change < 180 deg (short way);
-    # fractions above 0.5 sweep > 180 deg (long way). The k label must match
-    # which one the chosen tof actually produces.
-    test_cases = [
-        ("short way, 0 rev", 0.35 * period, 0.0),
-        ("long way, 0 rev", 0.65 * period, 0.5),
-        ("short way, 1 rev", 1.35 * period, 1.0),
-        ("long way, 1 rev", 1.65 * period, 1.5),
-    ]
-
-    for label, tof, k in test_cases:
-        r2_true, v2_true = two_body(mu_km, tof, r1_geo, v1_geo)
-
-        candidates = lambert_boundary_value(mu_km, r1_geo, r2_true, tof, k=k)
-
-        # For M > 0 there can be a second, physically distinct "vacant
-        # focus" candidate (see the docstring) -- accept a match against
-        # any of them, not just the first.
-        ok = any(
-            np.allclose(v1_hat, v1_geo, atol=1e-5)
-            and np.allclose(v2_hat, v2_true, atol=1e-5)
-            for v1_hat, v2_hat in candidates
-        )
-        print(
-            f"{label}: k={k}, tof={tof:.1f}s, "
-            f"{len(candidates)} candidate(s) -> {'OK' if ok else 'MISMATCH'}"
-        )
-        assert ok, f"{label} failed: candidates={candidates} vs v1={v1_geo}"
-
-        # Negative check: an adjacent-but-wrong k must NOT match, proving
-        # k actually distinguishes real transfer branches.
-        wrong_k = k + 0.5 if k == np.floor(k) else k - 0.5
-        try:
-            wrong_candidates = lambert_boundary_value(mu_km, r1_geo, r2_true, tof, k=wrong_k)
-            mismatched = not any(
-                np.allclose(v1_wrong, v1_geo, atol=1e-3) for v1_wrong, _ in wrong_candidates
-            )
-        except LambertNoSolution:
-            mismatched = True
-        assert mismatched, f"{label}: wrong k={wrong_k} should not match but did"
-
-    print("All round-trip checks passed.")
+# Validation lives in orbit/test_lambert.py, which exercises this module
+# against Curtis's published example, round-trips through the project's own
+# two-body propagator, independent integration of Newton's law, and the
+# degenerate-geometry failure paths:
+#
+#     uv run python orbit/test_lambert.py

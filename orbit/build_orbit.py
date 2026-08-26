@@ -6,11 +6,14 @@ range along a tracklet's fixed line-of-sight direction:
     r(rho) = r_s + rho * u
 
 Given two tracklets' site positions, line-of-sight directions, and epochs
-(from orbit/range_bounds.py), a range hypothesis (rho_1, rho_2), and a
-candidate revolutions/path parameter k (from orbit/k_bounds.py), this module
-builds r1, r2, and the time of flight, then hands them to
-dynamic/lambert.py's boundary-value Lambert solver -- Section 5's "Orbit"
-step (Fig. 5).
+(from hypothesis/range_bounds.py), a range hypothesis p = (rho_1, rho_2),
+and a candidate revolutions/path parameter k (from hypothesis/k_bounds.py),
+this module builds r_hat_1, r_hat_2 (Eq. 5's r_hat(rho) at t1 and t2) and
+delta_t = t2 - t1 (Eq. 29's notation), then hands them to this directory's
+lambert.py -- Section 5's "Orbit" step (Fig. 5). Lives in orbit/ because,
+like the paper, generating r_hat and r_hat_dot is considered part of orbit
+determination; the admissible-region bounds that (rho_1, rho_2, k)
+hypotheses are drawn *from* live in hypothesis/ instead.
 """
 
 import sys
@@ -20,16 +23,15 @@ import numpy as np
 from astropy.constants import GM_earth
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_PROJECT_ROOT / "dynamic"))
-sys.path.insert(0, str(_PROJECT_ROOT / "orbit"))
+sys.path.insert(0, str(_PROJECT_ROOT / "hypothesis"))
 
 from lambert import lambert_boundary_value, LambertNoSolution  # noqa: E402
 from k_bounds import k_grid  # noqa: E402
+from k_bounds import PRECISION_OUTPUT_FILES as K_BOUNDS_FILES  # noqa: E402
+from range_bounds import VARIANTS  # noqa: E402
+from range_bounds import PRECISION_OUTPUT_FILES as RANGE_BOUNDS_FILES  # noqa: E402
 
-RANGE_BOUNDS_FILE = _PROJECT_ROOT / "orbit" / "range_bounds.npz"
-K_BOUNDS_FILE = _PROJECT_ROOT / "orbit" / "k_bounds.npz"
-
-# km^3/s^2, matches simulation/new_data_gen.py, orbit/k_bounds.py.
+# km^3/s^2, matches simulation/new_data_gen.py, hypothesis/k_bounds.py.
 MU = GM_earth.value / 1_000_000_000.0
 
 
@@ -38,8 +40,8 @@ def position_from_range(r_s, u, rho):
     return np.asarray(r_s, dtype=np.float64) + rho * np.asarray(u, dtype=np.float64)
 
 
-def build_hypothesis(r_s_1, u_1, t0_1, rho_1, r_s_2, u_2, t0_2, rho_2, k, mu=MU):
-    """Solve the boundary-value orbit for one (rho_1, rho_2, k) hypothesis.
+def build_orbit(r_s_1, u_1, t1, rho_1, r_s_2, u_2, t2, rho_2, k, mu=MU):
+    """Solve the boundary-value orbit for one hypothesis p = (rho_1, rho_2, k).
 
     Orders the two tracklets by epoch internally, so callers do not need to
     know in advance which one comes first.
@@ -50,45 +52,49 @@ def build_hypothesis(r_s_1, u_1, t0_1, rho_1, r_s_2, u_2, t0_2, rho_2, k, mu=MU)
         Observing-site geocentric positions (km) at each tracklet's
         attributable epoch.
     u_1, u_2 : array-like, shape (3,)
-        Line-of-sight unit vectors (orbit/range_bounds.py's calculate_u_i)
-        at each tracklet's attributable epoch.
-    t0_1, t0_2 : float
-        Attributable reference epochs (s).
+        Line-of-sight unit vectors (hypothesis/range_bounds.py's
+        calculate_u_i) at each tracklet's attributable epoch.
+    t1, t2 : float
+        Observation epochs (s), matching Eq. (14)'s z = (alpha_1, delta_1,
+        alpha_2, delta_2) and Eq. (29)'s delta_t = t2 - t1.
     rho_1, rho_2 : float
-        Hypothesized topocentric ranges (km).
+        Hypothesized topocentric ranges (km); together, the paper's
+        hypothesis variable p = (rho_1, rho_2).
     k : float
         Revolutions/path parameter from the admissible k grid
-        (orbit/k_bounds.py).
+        (hypothesis/k_bounds.py).
 
     Returns
     -------
-    r1, r2 : ndarray, shape (3,)
-        Hypothesized geocentric positions (km), Eq. (5), returned in the
-        order (earlier epoch, later epoch).
-    tof : float
-        Time of flight between them (s); always positive.
-    candidates : list of (v1, v2) ndarray pairs
-        Boundary-value Lambert solutions; see
-        dynamic.lambert.lambert_boundary_value for why this can have more
-        than one entry.
+    r_hat_1, r_hat_2 : ndarray, shape (3,)
+        Hypothesized geocentric positions (km), Eq. (5)'s r_hat(rho) at t1
+        and t2, returned in the order (earlier epoch, later epoch).
+    delta_t : float
+        t2 - t1 (s); always positive on return.
+    candidates : list of (r_hat_dot_1, r_hat_dot_2) ndarray pairs
+        Boundary-value Lambert solutions -- the geocentric velocities at
+        t1, t2 for each candidate orbit; see this directory's
+        lambert.lambert_boundary_value for why this can have more than one
+        entry.
 
     Raises
     ------
-    dynamic.lambert.LambertNoSolution
-        If no two-body transfer connects r1 and r2 in tof at revolution k.
+    lambert.LambertNoSolution
+        If no two-body transfer connects r_hat_1 and r_hat_2 in delta_t at
+        revolution k.
     """
-    if t0_1 > t0_2:
-        r_s_1, u_1, t0_1, rho_1, r_s_2, u_2, t0_2, rho_2 = (
-            r_s_2, u_2, t0_2, rho_2, r_s_1, u_1, t0_1, rho_1,
+    if t1 > t2:
+        r_s_1, u_1, t1, rho_1, r_s_2, u_2, t2, rho_2 = (
+            r_s_2, u_2, t2, rho_2, r_s_1, u_1, t1, rho_1,
         )
 
-    r1 = position_from_range(r_s_1, u_1, rho_1)
-    r2 = position_from_range(r_s_2, u_2, rho_2)
-    tof = t0_2 - t0_1
+    r_hat_1 = position_from_range(r_s_1, u_1, rho_1)
+    r_hat_2 = position_from_range(r_s_2, u_2, rho_2)
+    delta_t = t2 - t1
 
-    candidates = lambert_boundary_value(mu, r1, r2, tof, k)
+    candidates = lambert_boundary_value(mu, r_hat_1, r_hat_2, delta_t, k)
 
-    return r1, r2, tof, candidates
+    return r_hat_1, r_hat_2, delta_t, candidates
 
 
 def _lookup_tracklet(object_ids, tracklet_ids, object_id, tracklet_id):
@@ -102,7 +108,7 @@ def _lookup_tracklet(object_ids, tracklet_ids, object_id, tracklet_id):
     return int(matches[0])
 
 
-def main():
+def demo_variant(variant):
     """Demonstrate the range_bounds -> k_bounds -> hypothesis -> Lambert chain.
 
     For each tracklet pair and each k in its admissible grid, this uses the
@@ -111,8 +117,13 @@ def main():
     guess of Eq. (31), which belongs to the optimizer stage and is not
     implemented yet. This only confirms the pieces built so far connect
     correctly end to end; it is not itself an association test.
+
+    Parameters
+    ----------
+    variant : str
+        Which dataset chain to demonstrate, "clean" or "noisy".
     """
-    with np.load(RANGE_BOUNDS_FILE) as archive:
+    with np.load(RANGE_BOUNDS_FILES[variant]) as archive:
         rb_object_ids = archive["object_id"]
         rb_tracklet_ids = archive["tracklet_id"]
         t0_values = archive["t0"]
@@ -121,7 +132,7 @@ def main():
         rho_min_i = archive["rho_min_i_km"]
         rho_max_i = archive["rho_max_i_km"]
 
-    with np.load(K_BOUNDS_FILE) as archive:
+    with np.load(K_BOUNDS_FILES[variant]) as archive:
         pair_object_id_1 = archive["object_id_1"]
         pair_tracklet_id_1 = archive["tracklet_id_1"]
         pair_object_id_2 = archive["object_id_2"]
@@ -148,14 +159,26 @@ def main():
         )
         for k in grid:
             try:
-                r1, r2, tof, candidates = build_hypothesis(
+                r_hat_1, r_hat_2, delta_t, candidates = build_orbit(
                     r_s_i[i], u_i[i], t0_values[i], rho_1_guess,
                     r_s_i[j], u_i[j], t0_values[j], rho_2_guess,
                     k,
                 )
-                print(f"  k={k}: {len(candidates)} candidate(s), tof={tof:.1f}s")
+                print(f"  k={k}: {len(candidates)} candidate(s), delta_t={delta_t:.1f}s")
             except LambertNoSolution as exc:
                 print(f"  k={k}: no solution ({exc})")
+
+
+def main():
+    """Run the demo for the clean and the noisy chain."""
+    for variant in VARIANTS:
+        if not (RANGE_BOUNDS_FILES[variant].exists() and K_BOUNDS_FILES[variant].exists()):
+            print(f"Skipping {variant}: bounds files missing")
+            continue
+
+        print(f"--- {variant} ---")
+        demo_variant(variant)
+        print()
 
 
 if __name__ == "__main__":
