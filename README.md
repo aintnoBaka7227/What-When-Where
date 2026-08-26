@@ -1,307 +1,119 @@
 # What When Where
 
-This project contains a Python script, `data_generation.py`, that generates synthetic satellite observation data. It creates a random orbit, propagates that orbit forward in time, places a few synthetic observing sites on Earth, and writes the satellite state and line-of-sight pointing measurements to a text file.
-
-## Dependencies
-
-The project uses:
-
-- `numpy` for vector and matrix math.
-- `scipy` for 3D rotations.
-- `numba` to compile the two-body propagator and RA/Dec conversion for speed.
-- `astropy` to get Earth constants.
-
-The dependencies are listed in `pyproject.toml`.
-
-## Units
-
-The script mixes constants from `astropy` with orbital calculations:
-
-- `GM_EARTH` comes from `astropy.constants.GM_earth.value` in SI units, which is `m^3/s^2`.
-- `R_EARTH` comes from `astropy.constants.R_earth.value` in meters.
-- `mu = GM_EARTH / 1000000000`, converting Earth gravitational parameter from `m^3/s^2` to `km^3/s^2`.
-- Satellite position values are handled in kilometers.
-- Satellite velocity values are handled in kilometers per second.
-- Observing site position values are stored in meters, then divided by `1000` when used with satellite positions.
-- Angles are in radians.
-- Time is in seconds.
-
-## What The Script Does
-
-When `data_generation (1).py` is run directly, it:
-
-1. Selects a test case. The current file sets `test_case = 'a'`.
-2. Randomly generates one set of classical orbital elements.
-3. Converts those classical orbital elements into equinoctial orbital elements.
-4. Converts the equinoctial elements into a GCRS-like position and velocity state.
-5. Creates 3 observing sites.
-6. For each site, generates 5 measurements over 5 seconds.
-7. Propagates the satellite state to each measurement time using a two-body orbit model.
-8. Converts the relative satellite-to-site position into right ascension and declination.
-9. Appends each generated measurement row to `generated_data.txt`.
-
-The current settings produce `3 * 5 = 15` rows per run.
-
-Important: the script writes to `generated_data.txt`, but the repository currently contains a file named `generated_data (1).txt`. If you run the script as-is, it will create or append to `generated_data.txt`.
-
-## Main Configuration
-
-Inside the `if __name__ == "__main__":` block:
-
-```python
-test_case = 'a'
-output_dir = 'generated_data.txt'
-num_of_sites = 3
-time_interval_between_sites = 120
-num_of_pts_in_each_site = 5
-measurement_time_in_each_site = 5
-```
-
-These values mean:
-
-- `test_case`: chooses the random orbit family.
-- `output_dir`: output text file path.
-- `num_of_sites`: number of synthetic observing sites.
-- `time_interval_between_sites`: time gap between site observation windows.
-- `num_of_pts_in_each_site`: number of measurements generated at each site.
-- `measurement_time_in_each_site`: length of each site observation window.
-
-The script computes:
-
-```python
-measurement_time_interval_within_each_site =
-    measurement_time_in_each_site / num_of_pts_in_each_site
-```
-
-With the current settings, measurements inside a site are taken 1 second apart.
-
-## Test Cases
-
-The test cases randomly choose different orbital ranges:
-
-- `a`: perigee radius from 6880 to 8380 km, eccentricity from 0 to 0.01.
-- `b`: perigee radius from 8380 to 9380 km, eccentricity from 0.01 to 0.2.
-- `c`: perigee radius from 8380 to 9380 km, eccentricity from 0.2 to 0.4.
-- `d`: perigee radius from 8380 to 9380 km, eccentricity from 0.4 to 0.6.
-
-All test cases randomly choose:
-
-- inclination from 1 to 179 degrees.
-- right ascension of ascending node from 0 to `2*pi`.
-- argument of perigee from 0 to `2*pi`.
-- true anomaly from 0 to `2*pi`.
-
-## Output Format
-
-Each output row is comma-separated and has 12 columns:
-
-```text
-rx,ry,rz,vx,vy,vz,ra,dec,site_x,site_y,site_z,time
-```
-
-Column meanings:
-
-- `rx`, `ry`, `rz`: satellite position in kilometers.
-- `vx`, `vy`, `vz`: satellite velocity in kilometers per second.
-- `ra`: right ascension of the satellite as seen from the synthetic site, in radians.
-- `dec`: declination of the satellite as seen from the synthetic site, in radians.
-- `site_x`, `site_y`, `site_z`: synthetic observing site position in meters.
-- `time`: propagation time since the initial state, in seconds.
-
-The file is opened in append mode, so running the script multiple times adds more rows instead of replacing the old data.
-
-## Function Reference
-
-### `gcrs_to_coe(gcrs)`
-
-Converts a Cartesian position and velocity state into classical orbital elements.
-
-Input:
-
-- `gcrs[0:3]`: position vector.
-- `gcrs[3:6]`: velocity vector.
-
-Output:
-
-```text
-[rp, e, i, ohm, omega, v]
-```
-
-Where:
-
-- `rp`: perigee radius.
-- `e`: eccentricity.
-- `i`: inclination.
-- `ohm`: right ascension of the ascending node.
-- `omega`: argument of perigee.
-- `v`: true anomaly.
-
-### `coe_to_gcrs(coe)`
-
-Converts classical orbital elements into Cartesian position and velocity.
-
-Input:
-
-```text
-[rp, e, i, ohm, omega, v]
-```
-
-The function computes semi-major axis `a`, semi-latus rectum `p`, position and velocity in the perifocal frame, then rotates them into the inertial frame.
-
-Output:
-
-```text
-[rx, ry, rz, vx, vy, vz]
-```
-
-### `oe_to_gcrs(oe)`
-
-Converts equinoctial orbital elements into Cartesian position and velocity.
-
-Input:
-
-```text
-[a, ex, ey, hx, hy, l]
-```
-
-Where:
-
-- `a`: semi-major axis.
-- `ex`, `ey`: eccentricity vector components.
-- `hx`, `hy`: inclination vector components.
-- `l`: true longitude.
-
-Output:
-
-```text
-[rx, ry, rz, vx, vy, vz]
-```
-
-This representation is often useful because it avoids some singularities that classical orbital elements have for circular or equatorial orbits.
-
-### `gcrs_to_oe(gcrs)`
-
-Converts Cartesian position and velocity into equinoctial orbital elements.
-
-Output:
-
-```text
-[a, f, g, h, k, L]
-```
-
-The returned values correspond to semi-major axis, eccentricity components, inclination components, and longitude.
-
-### `coe_to_eq_oe(coe)`
-
-Converts classical orbital elements into equinoctial orbital elements.
-
-Input:
-
-```text
-[rp, e, i, ohm, omega, v]
-```
-
-Output:
-
-```text
-[a, ex, ey, hx, hy, lv]
-```
-
-The script uses this function before creating the initial Cartesian state.
-
-### `two_body(mu, tau, ri, vi)`
-
-Propagates a satellite state forward by `tau` seconds using a two-body gravitational model.
-
-Input:
-
-- `mu`: Earth gravitational parameter in `km^3/s^2`.
-- `tau`: propagation time in seconds.
-- `ri`: initial position vector in kilometers.
-- `vi`: initial velocity vector in kilometers per second.
-
-Output:
-
-- `rf`: final position vector.
-- `vf`: final velocity vector.
-
-The function is decorated with:
-
-```python
-@jit(nopython=True, nogil=True, cache=True)
-```
-
-That means Numba compiles it for better performance.
-
-### `gcrs_to_radec(gcrs)`
-
-Converts a Cartesian position vector into right ascension and declination.
-
-Input:
-
-- A 3D position vector, or a state where the first 3 values are position.
-
-Output:
-
-```text
-[ra, dec]
-```
-
-The script uses this on the relative vector:
-
-```python
-satellite_position - observing_site_position
-```
-
-Because satellite positions are in kilometers and site positions are in meters, the site vector is divided by `1000` first.
-
-### `radec_to_point(radec)`
-
-Converts right ascension and declination into a unit direction vector.
-
-Input:
-
-```text
-[ra, dec]
-```
-
-Output:
-
-```text
-[x, y, z]
-```
-
-This function is defined but not used by the current main data generation flow.
-
-## Observing Site Generation
-
-At the first measurement for each site, the script:
-
-1. Takes the satellite radial direction.
-2. Generates a random 3D rotation axis.
-3. Generates a random rotation angle from 0 to 45 degrees.
-4. Rotates the satellite radial direction by that amount.
-5. Scales the result by Earth radius.
-
-That produces a synthetic observing site on Earth near the satellite's ground-facing direction.
-
-The same site is reused for all 5 measurements in that site's observation window.
-
-## Notes And Caveats
-
-- Output is appended, not overwritten.
-- The random number generator is not seeded, so every run creates different data.
-- The script uses `output_dir` as a filename, not a directory.
-- `generated_data (1).txt` appears to be sample output, but the script writes to `generated_data.txt`.
-- Some helper functions are not used in the current main flow, but they are useful for converting between orbital representations.
-- The variable name `v` is used both for velocity vectors and true anomaly in different functions, so read each function in context.
-
-## Running
-
-Use:
+Short-arc tracklet association for geostationary objects — an implementation of
+the boundary-value method from:
+
+> J.A. Siminski, O. Montenbruck, H. Fiedler, T. Schildknecht, "Short-arc
+> tracklet association for geostationary objects," *Advances in Space Research*
+> 53 (2014) 1184–1194. (`sources/siminski.pdf`)
+
+**The problem.** An optical telescope sees a satellite for a minute or two — a
+*tracklet* of 3–5 right-ascension/declination measurements — then loses it.
+Later, something is seen again. Are the two tracklets the same object? Angles
+alone constrain only 4 of an orbit's 6 degrees of freedom, so the question is
+underdetermined.
+
+**The approach.** Hypothesise the two unknown ranges, solve Lambert's problem to
+get a candidate orbit, then check whether that orbit's *predicted* angular rates
+match the *measured* ones. Optimise over the hypothesised ranges and the
+revolution count `k`; a small enough mismatch means the tracklets associate.
+
+For the full stage-by-stage description with every input and output, see
+[PIPELINE.md](PIPELINE.md).
+
+## Project structure
+
+The directory layout follows the data flow — each directory is one step in the
+chain, and the stage number is the order you run them in.
+
+| Directory | Stage | What lives there |
+|---|---|---|
+| `simulation/` | 1 | Synthetic observation generation. `new_data_gen.py` is the current generator; `data_generation.py` is the superseded original. |
+| `observation/` | 2 | Turning raw RA/Dec series into *attributables*. `fit_attributes.py` is the fit itself; `create_attributes_vector.py` drives it over the dataset. |
+| `hypothesis/` | 3–4 | The admissible search region. `range_bounds.py` bounds the topocentric range; `k_bounds.py` bounds the revolution count. |
+| `orbit/` | 5 | Turning a range hypothesis into an actual orbit. `lambert.py` is the boundary-value solver; `build_orbit.py` wires it to the bounds. |
+| `modelled/` | 6 | `model_rates.py` — what angular rates a candidate orbit *predicts*. |
+| `discriminator/` | 7 | `discriminator_loss.py` — how badly predicted rates disagree with measured ones. |
+| `optimisation/` | 8 | `optimise_hypothesis.py` — searching the region for the best-fitting orbit. The actual association test. |
+| `sources/` | — | The paper. |
+
+Two files are worth knowing about before you read any others:
+
+- **`hypothesis/range_bounds.py`** is the path authority for the whole project.
+  It defines `VARIANTS` and the `*_FILES` dictionaries that stages 3–8 import
+  rather than building paths themselves. If you want to know where data lives,
+  start there.
+- **`orbit/lambert.py`** is self-contained and has no pipeline dependencies. It
+  is the one piece you can read and test in isolation.
+
+## The two chains
+
+Every stage runs **twice**, over two parallel datasets generated from one
+orbit, one set of stations and one set of epochs:
+
+- **clean** — exact angles, no measurement error.
+- **noisy** — the same angles with Siminski measurement error applied
+  (0.7″ relative, 5″ systematic).
+
+They differ only in the two measured-angle columns, so any result can be
+compared against its own noise-free counterpart. Files are suffixed
+accordingly: `generated_data_clean.npz`, `generated_data_noisy.npz`, and so on.
+
+The clean chain is for geometry debugging — with no noise, any residual is a
+bug in the code, not in the data. The noisy chain is the real experiment.
+
+## Running it
+
+Dependencies are managed with [`uv`](https://docs.astral.sh/uv/):
 
 ```bash
-python "data_generation (1).py"
+uv sync
 ```
 
-This appends 15 generated rows to `generated_data.txt`.
+Then run the stages in order:
+
+```bash
+uv run python simulation/new_data_gen.py            # 1  appends ONE object
+uv run python observation/create_attributes_vector.py  # 2
+uv run python hypothesis/range_bounds.py            # 3
+uv run python hypothesis/k_bounds.py                # 4
+uv run python orbit/build_orbit.py             # 5
+uv run python modelled/model_rates.py               # 6
+uv run python discriminator/discriminator_loss.py   # 7
+uv run python optimisation/optimise_hypothesis.py   # 8  the association test
+```
+
+Every stage handles both chains itself — there is no flag to set.
+
+**Stage 1 appends one object per run.** Run it several times before stage 2, or
+stage 8 has only same-object pairs and nothing to discriminate against. Four
+objects gives 12 tracklets and 48 pairs, which is a reasonable working size.
+
+To reset to an empty dataset, delete the generated files and start over:
+
+```bash
+rm -f simulation/generated_data_{clean,noisy}.{npz,txt}
+```
+
+Generation is fully deterministic — object *n* is seeded with `n`, so the same
+object count always reproduces the same dataset.
+
+`orbit/lambert.py` is a self-test rather than a pipeline stage; run it directly
+whenever you touch the solver.
+
+## Conventions
+
+- Positions in km, velocities in km/s, angles in radians, time in seconds.
+- `mu = GM_earth / 1e9`, converting astropy's SI value to km³/s².
+- Attributable ordering is fixed project-wide: `[alpha, alpha_dot, delta, delta_dot]`.
+- `k` encodes both revolutions and transfer direction: integer part is the
+  number of full revolutions, fractional part (0 or 0.5) selects short-way or
+  long-way.
+- Every stage writes a `.npz` for computation and a `.txt` for reading. **The
+  `.npz` is canonical**; the text copies are lossy and nothing reads them back.
+
+## Requirements
+
+Python ≥ 3.11 (astropy's numpy-2.0 support requires it). Key dependencies:
+`numpy`, `scipy`, `numba` (JIT for the two-body propagator), `astropy` (Earth
+constants and frame transforms). Full list in `pyproject.toml`.
