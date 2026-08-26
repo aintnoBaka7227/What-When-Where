@@ -5,7 +5,7 @@ from numba import jit
 from scipy.spatial.transform import Rotation as R
 from astropy.constants import GM_earth, R_earth
 import astropy.units as u
-from astropy.coordinates import GCRS, ITRS, EarthLocation, CartesianRepresentation
+from astropy.coordinates import GCRS, ITRS, CartesianRepresentation, EarthLocation
 from astropy.time import Time
 from astropy.utils import iers
 
@@ -18,11 +18,31 @@ iers.conf.auto_max_age = None
 #   GM_earth is in m^3/s^2
 #   R_earth is in meters
 GM_EARTH = GM_earth.value
-R_EARTH = R_earth.value
 
 # The orbital equations below use kilometers for satellite position, so convert
 # Earth's gravitational parameter from m^3/s^2 to km^3/s^2.
 mu = GM_EARTH / 1000000000
+
+# Earth's equatorial radius in kilometers, used to turn a pointing direction
+# into a position on the globe.
+R_EARTH_KM = R_earth.value / 1000
+
+
+# Orbit population each test case samples from.
+#
+# hypothesis/range_bounds.py must bound the same population, or the true
+# range falls outside the region the optimizer is allowed to search and
+# every association silently fails. These limits are therefore written into
+# the generated .npz so the bounds can be derived from the data rather than
+# hardcoded to whichever case was current.
+SEMI_MAJOR_AXIS_LIMITS_KM = (38_000.0, 45_000.0)
+
+ECCENTRICITY_LIMITS = {
+    'a': (0.0, 0.01),    # near-circular: the paper's near-GEO test case
+    'b': (0.01, 0.2),
+    'c': (0.2, 0.4),
+    'd': (0.4, 0.6),
+}
 
 
 def gcrs_to_coe(gcrs):
@@ -562,101 +582,244 @@ def radec_to_point(radec):
     return point
 
 
+def place_station_below(satellite_position, epoch, rng, max_offset_angle=np.pi / 4):
+    '''
+    Place an Earth-fixed observing station on the ground near the point the
+    satellite is passing over.
+
+    The placement geometry is data_generation.py's: start from the satellite's
+    radial direction, tilt it by a random angle of at most max_offset_angle
+    about a random axis, and call that the station's direction. Because the
+    station lands within 45 degrees of the sub-satellite point, it can see the
+    object by construction -- no orbit ever goes unobserved.
+
+    What differs from data_generation.py is what happens to that direction. It
+    only means anything in GCRS at this one epoch, so a site built straight
+    from it is frozen in inertial space and has no velocity at all. Converting
+    it to ITRS -- the frame that co-rotates with Earth -- reinterprets it as a
+    fixed latitude/longitude on the ground instead. That single reinterpretation
+    is what supplies the velocity: a point fixed to a rotating rigid body moves
+    at omega_earth x r, so get_gcrs_posvel can hand back both position and a
+    consistent velocity at any later epoch.
+
+    Parameters
+    ----------
+    satellite_position : np.array (3,)
+        Satellite GCRS position at epoch (kilometers).
+    epoch : astropy.time.Time
+        Time at which the station is placed beneath the satellite.
+    rng : np.random.Generator
+        Source of the random tilt.
+    max_offset_angle : float
+        Largest tilt away from the satellite's direction (radians).
+
+    Returns
+    -------
+    station : astropy.coordinates.EarthLocation
+        Earth-fixed observing station.
+    '''
+    # Radial direction of the satellite, which is where the old file started.
+    direction = satellite_position / np.linalg.norm(satellite_position)
+
+    # Tilt it off the sub-satellite point. from_rotvec takes a rotation vector:
+    # direction = rotation axis, magnitude = rotation angle.
+    rotation_axis = rng.uniform(-1, 1, size=3)
+    rotation_axis = rotation_axis / np.linalg.norm(rotation_axis)
+    rotation_angle = rng.uniform(0, max_offset_angle)
+    tilted_direction = R.from_rotvec(rotation_angle * rotation_axis).apply(direction)
+
+    # Read that direction as a GCRS position at this epoch, then move it into
+    # the Earth-fixed frame to find the latitude and longitude it points at.
+    gcrs_point = GCRS(
+        CartesianRepresentation(*(tilted_direction * R_EARTH_KM), unit=u.km),
+        obstime=epoch
+    )
+    itrs_point = gcrs_point.transform_to(ITRS(obstime=epoch))
+
+    # EarthLocation.geodetic returns (lon, lat, height) in that order. The
+    # height is dropped and the station rebuilt at ground level: the direction
+    # above was scaled by Earth's *equatorial* radius, which sits roughly 11 km
+    # above the WGS84 ellipsoid at mid latitudes, and an 11 km-high telescope
+    # is not worth simulating.
+    longitude, latitude, _ = itrs_point.earth_location.geodetic
+    station = EarthLocation.from_geodetic(lon=longitude, lat=latitude, height=0.0 * u.m)
+
+    return station
+
+
 
 if __name__ == "__main__":
     # Keep all four orbit choices; use near-GEO option A for now.
     test_case = 'a'
     this_dir = Path(__file__).resolve().parent
-    output_file = this_dir / 'generated_data.txt'
-    rng = np.random.default_rng(42)
 
-    if test_case == 'a':
-        # Near-GEO: choose semi-major axis first, then convert it to perigee.
-        semi_major_axis = rng.uniform(38000, 45000)
-        eccentricity = rng.uniform(0, 0.01)
-        perigee_radius = semi_major_axis * (1 - eccentricity)
-        coe_oe = np.array([
-            perigee_radius,
-            eccentricity,
-            rng.uniform(np.deg2rad(1), np.deg2rad(179)),
-            rng.uniform(0, 2 * np.pi),
-            rng.uniform(0, 2 * np.pi),
-            rng.uniform(0, 2 * np.pi)
-        ])
-    elif test_case == 'b':
-        coe_oe = np.array([rng.uniform(8380, 9380),
-                           rng.uniform(0.01, 0.2),
-                           rng.uniform(np.deg2rad(1), np.deg2rad(179)),
-                           rng.uniform(0, 2 * np.pi),
-                           rng.uniform(0, 2 * np.pi),
-                           rng.uniform(0, 2 * np.pi)])
-    elif test_case == 'c':
-        coe_oe = np.array([rng.uniform(8380, 9380),
-                           rng.uniform(0.2, 0.4),
-                           rng.uniform(np.deg2rad(1), np.deg2rad(179)),
-                           rng.uniform(0, 2 * np.pi),
-                           rng.uniform(0, 2 * np.pi),
-                           rng.uniform(0, 2 * np.pi)])
-    elif test_case == 'd':
-        coe_oe = np.array([rng.uniform(8380, 9380),
-                           rng.uniform(0.4, 0.6),
-                           rng.uniform(np.deg2rad(1), np.deg2rad(179)),
-                           rng.uniform(0, 2 * np.pi),
-                           rng.uniform(0, 2 * np.pi),
-                           rng.uniform(0, 2 * np.pi)])
+    clean_output_file = this_dir / 'generated_data_clean.txt'
+    clean_npz_file = this_dir / "generated_data_clean.npz"
+
+    noisy_output_file = this_dir / 'generated_data_noisy.txt'
+    noisy_npz_file = this_dir / "generated_data_noisy.npz"
+
+    # Each run appends one new object rather than overwriting the files.
+    # The clean and noisy datasets must be generated together so they
+    # retain the same objects, stations, times and true states.
+    if clean_npz_file.exists() != noisy_npz_file.exists():
+        raise RuntimeError(
+            "Clean and noisy NPZ files must either both exist "
+            "or both not exist."
+        )
+
+    if clean_npz_file.exists():
+        with np.load(clean_npz_file) as existing_clean:
+            existing_clean_data = existing_clean["data"]
+            existing_clean_true_angles = existing_clean["true_angles"]
+            existing_case = str(existing_clean["test_case"]) if "test_case" in existing_clean else test_case
+
+        with np.load(noisy_npz_file) as existing_noisy:
+            existing_noisy_data = existing_noisy["data"]
+            existing_noisy_true_angles = existing_noisy["true_angles"]
+
+        # Mixing populations in one dataset would make the admissible
+        # region wrong for some objects and right for others, with no way
+        # for a later stage to tell which.
+        if existing_case != test_case:
+            raise RuntimeError(
+                f"{clean_npz_file.name} was generated with test_case "
+                f"'{existing_case}', but this run uses '{test_case}'. "
+                "Delete the generated_data_* files to start a new dataset."
+            )
+
+        object_id = int(existing_clean_data[:, 16].max()) + 1
     else:
-        raise ValueError("test_case must be 'a', 'b', 'c', or 'd'")
+        existing_clean_data = None
+        existing_clean_true_angles = None
 
-    # Siminski et al.: tracklets last 1-2 minutes and contain 3-5 measurements.
+        existing_noisy_data = None
+        existing_noisy_true_angles = None
+
+        object_id = 0
+
+    rng = np.random.default_rng(object_id)
+
+    if test_case not in ECCENTRICITY_LIMITS:
+        raise ValueError(
+            "test_case must be 'a', 'b', 'c', or 'd'"
+        )
+
+    semi_major_axis_min, semi_major_axis_max = SEMI_MAJOR_AXIS_LIMITS_KM
+    eccentricity_min, eccentricity_max = ECCENTRICITY_LIMITS[test_case]
+
+    semi_major_axis = rng.uniform(
+        semi_major_axis_min,
+        semi_major_axis_max,
+    )
+
+    # Choose the semi-major axis first, then convert it to perigee radius,
+    # which is what the classical-element vector below expects.
+    eccentricity = rng.uniform(
+        eccentricity_min,
+        eccentricity_max,
+    )
+
+    perigee_radius = semi_major_axis * (1 - eccentricity)
+
+    coe_oe = np.array([
+        perigee_radius,
+        eccentricity,
+        rng.uniform(np.deg2rad(1), np.deg2rad(179)),
+        rng.uniform(0, 2 * np.pi),
+        rng.uniform(0, 2 * np.pi),
+        rng.uniform(0, 2 * np.pi)
+    ])
+
+    # Siminski et al.: tracklets last 1-2 minutes and contain
+    # 3-5 measurements.
     num_of_tracklets = 3
     points_per_tracklet = 5
     measurement_interval = 30.0
-    tracklet_duration = (points_per_tracklet - 1) * measurement_interval
 
-    # The paper studies multiple separation-time groups rather than requiring
-    # one exact gap. Twelve hours selects its less-than-one-day association case.
+    tracklet_duration = (
+        points_per_tracklet - 1
+    ) * measurement_interval
+
+    # The paper studies multiple separation-time groups rather than
+    # requiring one exact gap. Twelve hours selects its less-than-one-day
+    # association case.
     gap_between_tracklets = 12.0 * 60.0 * 60.0
-    tracklet_start_interval = tracklet_duration + gap_between_tracklets
+
+    tracklet_start_interval = (
+        tracklet_duration + gap_between_tracklets
+    )
 
     # Siminski et al. measurement-error cases: relative angular noise of
     # 0.7, 1.2, or 2.0 arcsec and a 5 arcsec systematic-error test.
     relative_uncertainty_arcsec = 0.7
     systematic_uncertainty_arcsec = 5.0
-    arcsec_to_rad = np.deg2rad(1.0 / 3600.0)
-    sigma_relative_rad = relative_uncertainty_arcsec * arcsec_to_rad
-    sigma_systematic_rad = systematic_uncertainty_arcsec * arcsec_to_rad
 
-    start_epoch = Time('2026-07-21T00:00:00', scale='utc')
-    object_id = 0
+    arcsec_to_rad = np.deg2rad(1.0 / 3600.0)
+
+    sigma_relative_rad = (
+        relative_uncertainty_arcsec * arcsec_to_rad
+    )
+
+    sigma_systematic_rad = (
+        systematic_uncertainty_arcsec * arcsec_to_rad
+    )
+
+    start_epoch = Time(
+        '2026-07-21T00:00:00',
+        scale='utc'
+    )
 
     eq_oe = coe_to_eq_oe(coe_oe)
     rv_init = oe_to_gcrs(eq_oe)[np.newaxis, :]
 
-    # Choose one convenient station near the object's initial direction.
-    site_direction = rv_init[0, 0:3] / np.linalg.norm(rv_init[0, 0:3])
-    rot_axis = rng.uniform(-1.0, 1.0, 3)
-    rot_axis /= np.linalg.norm(rot_axis)
-    site_gcrs_m = R.from_rotvec(
-        rng.uniform(0.0, np.deg2rad(30.0)) * rot_axis
-    ).apply(site_direction) * R_EARTH
+    # Observing network: one station per tracklet, each placed on the
+    # ground beneath the object at that tracklet's own reference time,
+    # and used only for that tracklet.
+    tracklet_reference_times = [
+        tracklet_id * tracklet_start_interval
+        for tracklet_id in range(num_of_tracklets)
+    ]
 
-    # Fix that station to Earth and reuse it for every tracklet.
-    site_gcrs = GCRS(
-        CartesianRepresentation(*(site_gcrs_m * u.m)),
-        obstime=start_epoch
-    )
-    site_itrs = site_gcrs.transform_to(ITRS(obstime=start_epoch))
-    site_location = EarthLocation.from_geocentric(
-        site_itrs.x, site_itrs.y, site_itrs.z
-    )
+    station_locations = []
 
-    raw_rows = []
+    for reference_time in tracklet_reference_times:
+        r_reference, _ = two_body(
+            mu,
+            reference_time,
+            rv_init[0, 0:3],
+            rv_init[0, 3:6]
+        )
+
+        station_locations.append(
+            place_station_below(
+                r_reference,
+                start_epoch + reference_time * u.s,
+                rng
+            )
+        )
+
+    # Generate the clean and noisy versions from the same orbit,
+    # stations and observation times.
+    clean_rows = []
+    noisy_rows = []
     true_angle_rows = []
 
     for tracklet_id in range(num_of_tracklets):
         # One constant RA bias and one constant Dec bias for this tracklet.
-        ra_systematic_error = rng.normal(0.0, sigma_systematic_rad)
-        dec_systematic_error = rng.normal(0.0, sigma_systematic_rad)
+        # These are used only in the noisy dataset.
+        ra_systematic_error = rng.normal(
+            0.0,
+            sigma_systematic_rad
+        )
+
+        dec_systematic_error = rng.normal(
+            0.0,
+            sigma_systematic_rad
+        )
+
+        # Each tracklet uses its own station.
+        site_location = station_locations[tracklet_id]
 
         for point_id in range(points_per_tracklet):
             measurement_time = (
@@ -671,21 +834,37 @@ if __name__ == "__main__":
                 rv_init[0, 3:6]
             )
 
-            epoch = start_epoch + measurement_time * u.s
+            epoch = (
+                start_epoch
+                + measurement_time * u.s
+            )
 
-            site_position, site_velocity = site_location.get_gcrs_posvel(epoch)
-            site_position_km = site_position.xyz.to_value(u.km)
-            site_velocity_km_s = site_velocity.xyz.to_value(u.km / u.s)
+            site_position, site_velocity = (
+                site_location.get_gcrs_posvel(epoch)
+            )
+
+            site_position_km = (
+                site_position.xyz.to_value(u.km)
+            )
+
+            site_velocity_km_s = (
+                site_velocity.xyz.to_value(u.km / u.s)
+            )
 
             line_of_sight = r - site_position_km
-            ra_true, dec_true = gcrs_to_radec(line_of_sight)
 
-            # Independent relative noise is redrawn for every RA/Dec observation.
+            ra_true, dec_true = gcrs_to_radec(
+                line_of_sight
+            )
+
+            # Independent relative noise is redrawn for every
+            # RA/Dec observation.
             ra = (
                 ra_true
                 + ra_systematic_error
                 + rng.normal(0.0, sigma_relative_rad)
             ) % (2.0 * np.pi)
+
             dec = (
                 dec_true
                 + dec_systematic_error
@@ -700,33 +879,114 @@ if __name__ == "__main__":
                 object_id
             ])
 
-            raw_rows.append([
-                *r,                         # columns 0–2: satellite position
-                *v,                         # columns 3–5: satellite velocity
-                ra,                         # column 6: RA
-                dec,                        # column 7: Dec
-                *site_position_km,          # columns 8–10: station position
-                *site_velocity_km_s,        # columns 11–13: station velocity
-                measurement_time,           # column 14: time
-                tracklet_id,                # column 15: tracklet ID
-                object_id                   # column 16: object ID
+            # Perfect-observation row.
+            clean_rows.append([
+                *r,                         # columns 0-2
+                *v,                         # columns 3-5
+                ra_true,                    # column 6: noise-free RA
+                dec_true,                   # column 7: noise-free Dec
+                *site_position_km,          # columns 8-10
+                *site_velocity_km_s,        # columns 11-13
+                measurement_time,           # column 14
+                tracklet_id,                # column 15
+                object_id                   # column 16
             ])
 
-    generated_data = np.asarray(raw_rows, dtype=np.float64)
+            # Noisy-observation row.
+            noisy_rows.append([
+                *r,                         # columns 0-2
+                *v,                         # columns 3-5
+                ra,                         # column 6: noisy RA
+                dec,                        # column 7: noisy Dec
+                *site_position_km,          # columns 8-10
+                *site_velocity_km_s,        # columns 11-13
+                measurement_time,           # column 14
+                tracklet_id,                # column 15
+                object_id                   # column 16
+            ])
 
-    # Canonical calculation file
-    np.savez(
-        this_dir / "generated_data.npz",
-        data=generated_data,
-        true_angles=np.asarray(true_angle_rows, dtype=np.float64),
-        relative_uncertainty_arcsec=np.float64(relative_uncertainty_arcsec),
-        systematic_uncertainty_arcsec=np.float64(systematic_uncertainty_arcsec),
-        random_seed=np.int64(42)
+    new_clean_data = np.asarray(
+        clean_rows,
+        dtype=np.float64
     )
 
+    new_noisy_data = np.asarray(
+        noisy_rows,
+        dtype=np.float64
+    )
+
+    new_true_angles = np.asarray(
+        true_angle_rows,
+        dtype=np.float64
+    )
+
+    # Append the new object to the existing clean and noisy datasets.
+    if existing_clean_data is not None:
+        generated_clean_data = np.vstack([
+            existing_clean_data,
+            new_clean_data
+        ])
+
+        generated_noisy_data = np.vstack([
+            existing_noisy_data,
+            new_noisy_data
+        ])
+
+        clean_true_angles = np.vstack([
+            existing_clean_true_angles,
+            new_true_angles
+        ])
+
+        noisy_true_angles = np.vstack([
+            existing_noisy_true_angles,
+            new_true_angles
+        ])
+
+    else:
+        generated_clean_data = new_clean_data
+        generated_noisy_data = new_noisy_data
+
+        clean_true_angles = new_true_angles
+        noisy_true_angles = new_true_angles.copy()
+
+    # Canonical calculation file for perfectly observed data.
+    np.savez(
+        clean_npz_file,
+        data=generated_clean_data,
+        true_angles=clean_true_angles,
+        relative_uncertainty_arcsec=np.float64(0.0),
+        systematic_uncertainty_arcsec=np.float64(0.0),
+        random_seed=np.int64(object_id),
+        test_case=test_case,
+        a_min_km=np.float64(semi_major_axis_min),
+        a_max_km=np.float64(semi_major_axis_max),
+        e_min=np.float64(eccentricity_min),
+        e_max=np.float64(eccentricity_max)
+    )
+
+    # Canonical calculation file for noisy observed data.
+    np.savez(
+        noisy_npz_file,
+        data=generated_noisy_data,
+        true_angles=noisy_true_angles,
+        relative_uncertainty_arcsec=np.float64(
+            relative_uncertainty_arcsec
+        ),
+        systematic_uncertainty_arcsec=np.float64(
+            systematic_uncertainty_arcsec
+        ),
+        random_seed=np.int64(object_id),
+        test_case=test_case,
+        a_min_km=np.float64(semi_major_axis_min),
+        a_max_km=np.float64(semi_major_axis_max),
+        e_min=np.float64(eccentricity_min),
+        e_max=np.float64(eccentricity_max)
+    )
+
+    # Readable version of the clean dataset.
     np.savetxt(
-        output_file,
-        generated_data,
+        clean_output_file,
+        generated_clean_data,
         delimiter=",",
         fmt=[
             "%f", "%f", "%f",        # satellite position (km)
@@ -734,8 +994,8 @@ if __name__ == "__main__":
             "%f", "%f",              # RA and Dec (rad)
             "%f", "%f", "%f",        # station position (km)
             "%f", "%f", "%f",        # station velocity (km/s)
-            "%f",                         # measurement time (s)
-            "%d", "%d"                      # tracklet and object IDs
+            "%f",                     # measurement time (s)
+            "%d", "%d"                # tracklet and object IDs
         ],
         header=(
             "truth_rx_km,truth_ry_km,truth_rz_km,"
@@ -745,5 +1005,28 @@ if __name__ == "__main__":
             "site_vx_km_s,site_vy_km_s,site_vz_km_s,"
             "time_s,tracklet_id,object_id"
         )
-)
-                
+    )
+
+    # Readable version of the noisy dataset.
+    np.savetxt(
+        noisy_output_file,
+        generated_noisy_data,
+        delimiter=",",
+        fmt=[
+            "%f", "%f", "%f",        # satellite position (km)
+            "%f", "%f", "%f",        # satellite velocity (km/s)
+            "%f", "%f",              # RA and Dec (rad)
+            "%f", "%f", "%f",        # station position (km)
+            "%f", "%f", "%f",        # station velocity (km/s)
+            "%f",                     # measurement time (s)
+            "%d", "%d"                # tracklet and object IDs
+        ],
+        header=(
+            "truth_rx_km,truth_ry_km,truth_rz_km,"
+            "truth_vx_km_s,truth_vy_km_s,truth_vz_km_s,"
+            "ra_rad,dec_rad,"
+            "site_x_km,site_y_km,site_z_km,"
+            "site_vx_km_s,site_vy_km_s,site_vz_km_s,"
+            "time_s,tracklet_id,object_id"
+        )
+    )
