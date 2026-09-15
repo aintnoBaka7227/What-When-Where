@@ -31,10 +31,18 @@ paper's short-way or long-way transfer therefore depends on the sign of
 cross(r1, r2)[2], which varies per hypothesis. Rather than rely on a
 sign-convention formula, this module solves the candidate (prograde,
 low_path) combinations and classifies each resulting solution by directly
-recomputing its true swept transfer angle from r1, r2, and the solution's
-own orbital-plane normal (h = r1 x v1) -- this is independent of hapsira's
-internal conventions.
+recomputing its true swept transfer angle -- and its direction of motion
+(the sign of h_z, h = r1 x v1) -- from r1, r2, and the solution's own
+orbital-plane normal. This is independent of hapsira's internal
+conventions.
+
+Each returned solution is a LambertSolution carrying, alongside the two
+velocity vectors, this classification: prograde/retrograde, long-way/
+short-way, and (for multi-revolution transfers) the low-path/high-path
+vacant-focus branch.
 """
+
+from typing import NamedTuple, Optional
 
 import numpy as np
 from hapsira.core.iod import izzo as _izzo_core
@@ -42,6 +50,36 @@ from hapsira.core.iod import izzo as _izzo_core
 
 class LambertNoSolution(RuntimeError):
     """No two-body transfer connects r1 and r2 in tof at revolution count k."""
+
+
+class LambertSolution(NamedTuple):
+    """One converged boundary-value transfer, with its geometric classification.
+
+    v1, v2 : ndarray, shape (3,)
+        Geocentric velocity vectors (km/s) at t1 and t2.
+    prograde : bool
+        True if the transfer orbit's motion is prograde (angular momentum
+        r1 x v1 has a positive z-component), False if retrograde. Classified
+        from the solution itself, not from hapsira's input flag, so it does
+        not depend on hapsira's internal sign conventions.
+    long_way : bool
+        True if the swept transfer angle exceeds 180 degrees (long-way /
+        k fractional part 0.5), False for the short way. Recomputed from
+        r1, r2 and the solution's own orbital plane; always matches the
+        requested k.
+    low_path : bool or None
+        For a multi-revolution transfer (M > 0), True if this is hapsira's
+        low-path branch (transfer ellipse's vacant focus below the chord
+        line) and False for the high-path branch -- the two are physically
+        distinct orbits sweeping the same arc. None when M == 0, where the
+        branches coincide and the transfer is unique.
+    """
+
+    v1: np.ndarray
+    v2: np.ndarray
+    prograde: bool
+    long_way: bool
+    low_path: Optional[bool]
 
 
 def k_to_revolutions(k):
@@ -83,6 +121,16 @@ def _is_long_way(r1, r2, v1):
     return dnu > np.pi
 
 
+def _is_prograde(r1, v1):
+    """Classify a converged Lambert solution as prograde or retrograde.
+
+    Reads the sign of the specific angular momentum's z-component from the
+    solution itself, so -- like `_is_long_way` -- it is independent of
+    hapsira's internal sign conventions for its `prograde` input flag.
+    """
+    return bool(np.cross(r1, v1)[2] > 0.0)
+
+
 def lambert_boundary_value(mu, r1, r2, tof, k, numiter=35, rtol=1e-8):
     """Solve the boundary-value Lambert problem for one (rho_1, rho_2) hypothesis.
 
@@ -109,18 +157,20 @@ def lambert_boundary_value(mu, r1, r2, tof, k, numiter=35, rtol=1e-8):
 
     Returns
     -------
-    candidates : list of (v1, v2) ndarray pairs, shape (3,) each
-        Geocentric velocity vectors (km/s) at t1 and t2. For M = 0 (k's
-        integer part 0) this list always has exactly one entry, since the
-        short/long-way transfer angle and the direction of motion together
-        fully determine the orbit. For M > 0 it can have two: this is the
-        genuine "vacant focus" ambiguity (whether the transfer ellipse's
-        empty focus lies below or above the chord line) -- two physically
-        distinct orbits can both sweep the same number of revolutions via
-        the same short/long-way arc. The paper does not disambiguate
-        between them for its geostationary test case, where M is almost
-        always 0; picking between multiple candidates is left to the
-        eventual discriminator/optimizer stage, which can score each
+    candidates : list of LambertSolution
+        Each carries the geocentric velocities (v1, v2) at t1 and t2 plus
+        the transfer's geometric classification (prograde/retrograde,
+        long-way/short-way, low-path/high-path); see LambertSolution. For
+        M = 0 (k's integer part 0) this list always has exactly one entry,
+        since the short/long-way transfer angle and the direction of
+        motion together fully determine the orbit. For M > 0 it can have
+        two: this is the genuine "vacant focus" ambiguity (whether the
+        transfer ellipse's empty focus lies below or above the chord line)
+        -- two physically distinct orbits can both sweep the same number
+        of revolutions via the same short/long-way arc. The paper does not
+        disambiguate between them for its geostationary test case, where M
+        is almost always 0; picking between multiple candidates is left to
+        the eventual discriminator/optimizer stage, which can score each
         against the tracklets' measured angular rates.
 
     Raises
@@ -151,7 +201,13 @@ def lambert_boundary_value(mu, r1, r2, tof, k, numiter=35, rtol=1e-8):
             except (ValueError, RuntimeError):
                 continue
             if _is_long_way(r1, r2, v1) == long_way:
-                candidates.append((v1, v2))
+                candidates.append(LambertSolution(
+                    v1=v1,
+                    v2=v2,
+                    prograde=_is_prograde(r1, v1),
+                    long_way=long_way,
+                    low_path=None if M == 0 else low_path,
+                ))
 
     if not candidates:
         raise LambertNoSolution(

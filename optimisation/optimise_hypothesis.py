@@ -25,8 +25,10 @@ across possibly-different trial points.
 
 The paper specifies quasi-Newton search with numerically approximated
 derivatives when no analytic gradient is known (Section 5.2) -- exactly
-what scipy.optimize.minimize(method="L-BFGS-B") does by default without an
-explicit `jac`, so no analytic gradient of L is derived here.
+what scipy.optimize.minimize(method="L-BFGS-B") does without an explicit
+`jac`, so no analytic gradient of L is derived here. Its finite-difference
+step and tolerances are set explicitly (see _MINIMIZER_OPTIONS); the
+defaults under-resolve the loss valley and stop the search early.
 """
 
 import sys
@@ -66,6 +68,28 @@ MU = GM_earth.value / 1_000_000_000.0
 # penalized (rather than raising out of the optimizer) so L-BFGS-B can step
 # away from it instead of crashing the search.
 _INFEASIBLE_PENALTY = 1.0e12
+
+# L-BFGS-B options for the Eq. (30) search over p = (rho_1, rho_2).
+#
+# The defaults fail here. `eps` -- the finite-difference step for the
+# numerical gradient -- defaults to ~1e-8, so on ranges of ~4e4 km the
+# gradient is probed across a step 12 orders of magnitude too small and
+# comes back as rounding noise. L-BFGS-B then "converges" two iterations
+# from the circular-orbit seed, thousands of times above the true minimum
+# (optimisation/validate_optimiser.py demonstrates this). A 1 km step
+# resolves the loss valley, which stays ~500 km wide even for the
+# ill-conditioned near-180-degree transfers. ftol/gtol are tightened to
+# match and maxiter is raised so the tighter tolerances have room to run.
+#
+# This `eps` is unrelated to the `eps` argument threaded through to
+# discriminator_loss for the Eq. (19) Jacobian -- different finite
+# difference, over a different variable.
+_MINIMIZER_OPTIONS = {
+    "eps": 1.0,
+    "ftol": 1.0e-11,
+    "gtol": 1.0e-10,
+    "maxiter": 500,
+}
 
 
 def semi_major_axis_for_k(
@@ -153,7 +177,7 @@ def optimize_hypothesis(
     variant, k, delta_t,
     c_1, r_s1, v_s1, t1, rho_1_bounds, attributable_1, ca_1,
     c_2, r_s2, v_s2, t2, rho_2_bounds, attributable_2, ca_2,
-    mu=MU, eps=1e-6, a_min=A_MIN, a_max=A_MAX,
+    mu=MU, eps=1e-6, a_min=A_MIN, a_max=A_MAX, history=None,
 ):
     """Equation (30): minimize L(p, k) over p = (rho_1, rho_2) in C, for one k.
 
@@ -183,6 +207,11 @@ def optimize_hypothesis(
         [alpha, alpha_dot, delta, delta_dot] per tracklet.
     ca_1, ca_2 : array-like, shape (4, 4)
         Attributable covariance per tracklet.
+    history : list, optional
+        If given, every objective evaluation L-BFGS-B makes is appended as
+        (rho_1, rho_2, loss), in call order. The seed is the first entry.
+        Used by optimisation/validate_optimiser.py to check the search
+        actually descended rather than stalling on its first step.
 
     Returns
     -------
@@ -199,12 +228,20 @@ def optimize_hypothesis(
     rho_1_0 = float(np.clip(rho_1_0, *rho_1_bounds))
     rho_2_0 = float(np.clip(rho_2_0, *rho_2_bounds))
 
+    objective = _objective
+    if history is not None:
+        def objective(p, *args):
+            value = _objective(p, *args)
+            history.append((float(p[0]), float(p[1]), float(value)))
+            return value
+
     result = minimize(
-        _objective,
+        objective,
         x0=[rho_1_0, rho_2_0],
         args=(variant, k, r_s1, v_s1, t1, attributable_1, ca_1, r_s2, v_s2, t2, attributable_2, ca_2, mu, eps),
         method="L-BFGS-B",
         bounds=[rho_1_bounds, rho_2_bounds],
+        options=_MINIMIZER_OPTIONS,
     )
 
     rho_1_opt, rho_2_opt = result.x

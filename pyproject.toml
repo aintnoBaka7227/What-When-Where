@@ -7,7 +7,15 @@ requires-python = ">=3.11"
 dependencies = [
     "astropy>=6.1",
     "hapsira>=0.18.0",
+    "matplotlib>=3.9.0",  # NumPy 2 ABI; see [tool.uv] override below
     "numba>=0.60.0",
     "numpy>=2.0.2",
     "scipy>=1.13.1",
 ]
+
+[tool.uv]
+# hapsira 0.18.0 caps matplotlib at <3.8, which predates the NumPy 2 ABI
+# and fails to import against this project's NumPy 2.x. We only ever import
+# hapsira.core.iod (numba math, no matplotlib), never its plotting, so it
+# is safe to force a NumPy-2-compatible matplotlib for the figure scripts.
+override-dependencies = ["matplotlib>=3.9.0"]

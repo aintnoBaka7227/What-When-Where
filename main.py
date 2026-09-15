@@ -4,6 +4,7 @@
     uv run python main.py --objects 5      # generate 5 new objects first, then run
     uv run python main.py --fresh -n 5     # delete the dataset, generate 5, then run
     uv run python main.py --tests          # run the test suites first, then the pipeline
+    uv run python main.py --validate       # after the pipeline, trace every optimisation
     uv run python main.py --list           # show the stages and exit
 
 Every stage runs as a separate process, the way you would run it by hand.
@@ -16,7 +17,9 @@ importing them was never an option anyway.
 Output is echoed live and captured to runs/<timestamp>.log, so a run can be
 diffed against an earlier one. That matters here: the association result is
 a handful of numbers at the very end of a three-minute run, and a change
-upstream moves them quietly.
+upstream moves them quietly. With --validate, a companion
+runs/<timestamp>-validate.log (same timestamp) holds the optimiser trace,
+and the per-evaluation CSVs are stamped to match.
 """
 
 import argparse
@@ -76,12 +79,12 @@ class Tee:
             self.log_file.flush()
 
 
-def run_script(tee, relative_path, indent="      "):
+def run_script(tee, relative_path, indent="      ", script_args=()):
     """Run one script, streaming its output. Returns (ok, seconds)."""
     started = time.monotonic()
 
     process = subprocess.Popen(
-        [sys.executable, str(PROJECT_ROOT / relative_path)],
+        [sys.executable, str(PROJECT_ROOT / relative_path), *script_args],
         cwd=PROJECT_ROOT,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -90,7 +93,8 @@ def run_script(tee, relative_path, indent="      "):
     )
 
     for line in process.stdout:
-        tee.write(f"{indent}{line}")
+        if tee is not None:            # tee=None: drain the pipe silently
+            tee.write(f"{indent}{line}")
 
     process.wait()
     return process.returncode == 0, time.monotonic() - started
@@ -136,6 +140,11 @@ def main():
         help="run the test suites before the pipeline, and stop if they fail",
     )
     parser.add_argument(
+        "--validate", action="store_true",
+        help="after the pipeline, trace every optimisation into a companion "
+             "runs/<timestamp>-validate.log (see optimisation/validate_optimiser.py)",
+    )
+    parser.add_argument(
         "--no-log", action="store_true",
         help="do not write runs/<timestamp>.log",
     )
@@ -154,12 +163,14 @@ def main():
     if args.fresh and args.objects < 1:
         parser.error("--fresh deletes the dataset, so it needs --objects to rebuild it")
 
+    stamp = f"{datetime.now():%Y-%m-%d-%H%M%S}"
+
     log_file = None
     log_path = None
     if not args.no_log:
         runs_directory = PROJECT_ROOT / "runs"
         runs_directory.mkdir(exist_ok=True)
-        log_path = runs_directory / f"{datetime.now():%Y-%m-%d-%H%M%S}.log"
+        log_path = runs_directory / f"{stamp}.log"
         log_file = log_path.open("w")
 
     tee = Tee(log_file)
@@ -232,8 +243,29 @@ def main():
     if failed:
         tee.write(f"\n  {len(failed)} stage(s) failed: {', '.join(failed)}\n")
 
+    # Optimiser validation runs after the pipeline (it reads the derived
+    # bounds files the pipeline just wrote). It writes its own
+    # runs/<stamp>-validate.log -- given the same stamp as this run -- so its
+    # ~1700 lines stay out of both the terminal and the main log.
+    validate_path = None
+    if args.validate and not failed:
+        script_args = ["--stamp", stamp]
+        if args.no_log:
+            script_args.append("--no-log")
+        else:
+            validate_path = PROJECT_ROOT / "runs" / f"{stamp}-validate.log"
+
+        tee.write("\n  --validate: tracing every optimisation\n")
+        ok, seconds = run_script(
+            None, "optimisation/validate_optimiser.py",
+            script_args=tuple(script_args),
+        )
+        tee.write(f"      {'ok' if ok else 'FAILED':>7}  {seconds:7.1f}s\n")
+
     if log_path is not None:
         tee.write(f"\n  log: {log_path.relative_to(PROJECT_ROOT)}\n")
+    if validate_path is not None:
+        tee.write(f"  validate log: {validate_path.relative_to(PROJECT_ROOT)}\n")
     tee.write(f"{rule}\n")
 
     if log_file is not None:

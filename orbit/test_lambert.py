@@ -181,10 +181,10 @@ def test_curtis_example_5_2():
     r2 = np.array([-14600.0, 2500.0, 7000.0])
 
     # The unpack asserts exactly one candidate for a zero-revolution transfer.
-    (v1, v2), = lambert_boundary_value(mu_curtis, r1, r2, tof=3600.0, k=0.0)
+    (sol,) = lambert_boundary_value(mu_curtis, r1, r2, tof=3600.0, k=0.0)
 
-    assert np.allclose(v1, [-5.9925, 1.9254, 3.2456], atol=1e-3), v1
-    assert np.allclose(v2, [-3.3125, -4.1966, -0.3853], atol=1e-3), v2
+    assert np.allclose(sol.v1, [-5.9925, 1.9254, 3.2456], atol=1e-3), sol.v1
+    assert np.allclose(sol.v2, [-3.3125, -4.1966, -0.3853], atol=1e-3), sol.v2
 
 
 # --------------------------------------------------------------------------
@@ -202,9 +202,9 @@ def test_round_trip_recovers_known_orbit():
         candidates = lambert_boundary_value(MU, r1, r2, tof, k)
 
         assert any(
-            np.allclose(v1, v1_true, atol=TRUTH_TOL_KM_S)
-            and np.allclose(v2, v2_true, atol=TRUTH_TOL_KM_S)
-            for v1, v2 in candidates
+            np.allclose(sol.v1, v1_true, atol=TRUTH_TOL_KM_S)
+            and np.allclose(sol.v2, v2_true, atol=TRUTH_TOL_KM_S)
+            for sol in candidates
         ), f"k={k}: no candidate recovered the known orbit"
 
 
@@ -234,7 +234,7 @@ def test_round_trip_over_eccentric_orbits():
             failures.append(f"no solution: {exc}")
             continue
 
-        best = min(np.linalg.norm(v1 - v1_true) for v1, _ in candidates)
+        best = min(np.linalg.norm(sol.v1 - v1_true) for sol in candidates)
         if best > TRUTH_TOL_KM_S:
             failures.append(f"velocity error {best:.3e} km/s")
 
@@ -260,7 +260,8 @@ def test_every_candidate_connects_the_endpoints():
         tof = period_multiplier * period
         r2, _ = two_body(MU, tof, r1, v1_true)
 
-        for index, (v1, v2) in enumerate(lambert_boundary_value(MU, r1, r2, tof, k)):
+        for index, sol in enumerate(lambert_boundary_value(MU, r1, r2, tof, k)):
+            v1, v2 = sol.v1, sol.v2
             r_arrival, v_arrival = two_body(MU, tof, r1, v1)
 
             position_error = np.linalg.norm(r_arrival - r2)
@@ -291,7 +292,8 @@ def test_every_candidate_closes_under_independent_integration():
         tof = period_multiplier * period
         r2, _ = two_body(MU, tof, r1, v1_true)
 
-        for index, (v1, v2) in enumerate(lambert_boundary_value(MU, r1, r2, tof, k)):
+        for index, sol in enumerate(lambert_boundary_value(MU, r1, r2, tof, k)):
+            v1, v2 = sol.v1, sol.v2
             r_arrival, v_arrival = integrate_state(r1, v1, tof)
 
             position_error = np.linalg.norm(r_arrival - r2)
@@ -317,7 +319,8 @@ def test_candidates_are_self_consistent_orbits():
         tof = period_multiplier * period
         r2, _ = two_body(MU, tof, r1, v1_true)
 
-        for index, (v1, v2) in enumerate(lambert_boundary_value(MU, r1, r2, tof, k)):
+        for index, sol in enumerate(lambert_boundary_value(MU, r1, r2, tof, k)):
+            v1, v2 = sol.v1, sol.v2
             start = orbital_elements(r1, v1)
             end = orbital_elements(r2, v2)
 
@@ -342,9 +345,14 @@ def test_multi_revolution_returns_two_distinct_candidates():
             f"k={k}: expected 2 candidates, received {len(candidates)}"
         )
 
-        separation = np.linalg.norm(candidates[0][0] - candidates[1][0])
+        separation = np.linalg.norm(candidates[0].v1 - candidates[1].v1)
         assert separation > 1e-6, (
             f"k={k}: low/high candidates are duplicates"
+        )
+
+        assert {c.low_path for c in candidates} == {True, False}, (
+            f"k={k}: expected one low-path and one high-path candidate, "
+            f"got {[c.low_path for c in candidates]}"
         )
 
 
@@ -356,11 +364,17 @@ def test_transfer_angle_matches_k():
         tof = period_multiplier * period
         r2, _ = two_body(MU, tof, r1, v1_true)
 
-        for index, (v1, _) in enumerate(lambert_boundary_value(MU, r1, r2, tof, k)):
-            sweep = swept_angle(r1, r2, v1)
+        for index, sol in enumerate(lambert_boundary_value(MU, r1, r2, tof, k)):
+            sweep = swept_angle(r1, r2, sol.v1)
 
             assert (sweep > np.pi) == expects_long_way(k), (
                 f"k={k}, candidate {index}: sweep {np.rad2deg(sweep):.3f} deg"
+            )
+            assert sol.long_way == expects_long_way(k), (
+                f"k={k}, candidate {index}: long_way flag disagrees with k"
+            )
+            assert sol.prograde == (np.cross(r1, sol.v1)[2] > 0.0), (
+                f"k={k}, candidate {index}: prograde flag disagrees with h_z"
             )
 
 
@@ -463,8 +477,8 @@ def test_near_singular_geometry_is_refused_or_correct():
         except LambertNoSolution:
             continue
 
-        for index, (v1, _) in enumerate(candidates):
-            r_arrival, _ = integrate_state(r1, v1, tof)
+        for index, sol in enumerate(candidates):
+            r_arrival, _ = integrate_state(r1, sol.v1, tof)
             error = np.linalg.norm(r_arrival - r2)
 
             assert error < POSITION_TOL_KM, (

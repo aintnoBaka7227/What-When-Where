@@ -136,8 +136,10 @@ def z_hat_dot_candidates_from_z(
     )
 
     return [
-        modeled_angular_rates(r_hat_1, v1, r_s1, v_s1, r_hat_2, v2, r_s2, v_s2)
-        for v1, v2 in candidates
+        modeled_angular_rates(
+            r_hat_1, sol.v1, r_s1, v_s1, r_hat_2, sol.v2, r_s2, v_s2,
+        )
+        for sol in candidates
     ]
 
 

@@ -742,9 +742,12 @@ if __name__ == "__main__":
     ) * measurement_interval
 
     # The paper studies multiple separation-time groups rather than
-    # requiring one exact gap. Twelve hours selects its less-than-one-day
-    # association case.
-    gap_between_tracklets = 12.0 * 60.0 * 60.0
+    # requiring one exact gap. Near-GEO periods are ~20.5-26.4 h, so this
+    # gap sets how many revolutions k separate consecutive tracklets:
+    # 12 h -> k in {0, 0.5}, 24 h -> {0.5, 1.0}, 36 h -> {1.0, 1.5},
+    # 48 h -> {1.5, 2.0}. hypothesis/k_bounds.py derives the actual grid
+    # from the resulting epochs, so only this line changes.
+    gap_between_tracklets = 36.0 * 60.0 * 60.0
 
     tracklet_start_interval = (
         tracklet_duration + gap_between_tracklets

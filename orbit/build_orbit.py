@@ -25,7 +25,7 @@ from astropy.constants import GM_earth
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT / "hypothesis"))
 
-from lambert import lambert_boundary_value, LambertNoSolution  # noqa: E402
+from lambert import lambert_boundary_value, LambertNoSolution, LambertSolution  # noqa: E402
 from k_bounds import k_grid  # noqa: E402
 from k_bounds import PRECISION_OUTPUT_FILES as K_BOUNDS_FILES  # noqa: E402
 from range_bounds import VARIANTS  # noqa: E402
@@ -71,11 +71,15 @@ def build_orbit(r_s_1, u_1, t1, rho_1, r_s_2, u_2, t2, rho_2, k, mu=MU):
         and t2, returned in the order (earlier epoch, later epoch).
     delta_t : float
         t2 - t1 (s); always positive on return.
-    candidates : list of (r_hat_dot_1, r_hat_dot_2) ndarray pairs
-        Boundary-value Lambert solutions -- the geocentric velocities at
-        t1, t2 for each candidate orbit; see this directory's
-        lambert.lambert_boundary_value for why this can have more than one
-        entry.
+    candidates : list of lambert.LambertSolution
+        Boundary-value Lambert solutions. Each holds the geocentric
+        velocities (v1, v2) = (r_hat_dot_1, r_hat_dot_2) at t1, t2 for one
+        candidate orbit, along with its geometric classification --
+        `prograde` (prograde vs retrograde motion), `long_way` (transfer
+        angle >180 deg vs <180 deg), and `low_path` (the multi-revolution
+        vacant-focus branch, or None when k's integer part is 0). See
+        this directory's lambert.lambert_boundary_value for why this can
+        have more than one entry.
 
     Raises
     ------
@@ -95,6 +99,17 @@ def build_orbit(r_s_1, u_1, t1, rho_1, r_s_2, u_2, t2, rho_2, k, mu=MU):
     candidates = lambert_boundary_value(mu, r_hat_1, r_hat_2, delta_t, k)
 
     return r_hat_1, r_hat_2, delta_t, candidates
+
+
+def describe_solution(sol: LambertSolution):
+    """One-line human-readable classification of a lambert.LambertSolution."""
+    direction = "prograde" if sol.prograde else "retrograde"
+    path = "long-way" if sol.long_way else "short-way"
+    if sol.low_path is None:
+        branch = "unique-path"
+    else:
+        branch = "low-path" if sol.low_path else "high-path"
+    return f"{direction}, {path}, {branch}"
 
 
 def _lookup_tracklet(object_ids, tracklet_ids, object_id, tracklet_id):
@@ -164,7 +179,11 @@ def demo_variant(variant):
                     r_s_i[j], u_i[j], t0_values[j], rho_2_guess,
                     k,
                 )
-                print(f"  k={k}: {len(candidates)} candidate(s), delta_t={delta_t:.1f}s")
+                print(
+                    f"  k={k}: {len(candidates)} candidate(s), delta_t={delta_t:.1f}s"
+                )
+                for c, sol in enumerate(candidates):
+                    print(f"    candidate {c}: {describe_solution(sol)}")
             except LambertNoSolution as exc:
                 print(f"  k={k}: no solution ({exc})")
 
