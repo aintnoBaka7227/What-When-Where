@@ -601,9 +601,21 @@ if __name__ == "__main__":
     # or 'd' to use the other eccentricity/perigee-radius ranges below.
     test_case = 'a'
 
-    # Output file. The script opens this in append mode later, so repeated runs
-    # add rows instead of replacing old rows.
-    output_dir = 'generated_data_gcrs.txt'
+    # Output files. The script opens these in append mode later, so repeated
+    # runs add rows instead of replacing old rows. Both files are written from
+    # the same orbit, stations and epochs and differ only in the RA/Dec columns:
+    # the clean file holds the true angles, the noisy file adds measurement error.
+    clean_output = 'generated_data_gcrs_clean.txt'
+    noisy_output = 'generated_data_gcrs_noisy.txt'
+
+    # Siminski et al. (2014) measurement-error model (Section 6.1).
+    # Relative noise is redrawn for every observation; the systematic error is
+    # drawn once per tracklet and held constant, modelling the ZimSMART
+    # exposure-epoch offset. Set sigma_systematic to 0 for relative noise only.
+    # RA noise is not divided by cos(dec), matching new_data_gen.py.
+    ARCSEC = np.deg2rad(1.0 / 3600.0)
+    sigma_relative = 0.7 * ARCSEC     # rad
+    sigma_systematic = 5.0 * ARCSEC   # rad
 
     # Each test case builds one random set of classical orbital elements:
     #   [rp, e, i, ohm, omega, v]
@@ -682,13 +694,24 @@ if __name__ == "__main__":
     # Adopt GCRS axes for the synthetic satellite position and velocity.
     epoch = Time("2012-08-18T22:59:08", scale="utc")
 
-    # Unique IDs, continued from any rows already in the output file:
-    # one tracklet_id per site window, one observation_id per row.
-    first_tracklet_id, observation_id = next_ids(output_dir)
+    # Unique IDs, continued from any rows already in the output files:
+    # one tracklet_id per site window, one observation_id per row. The clean
+    # and noisy files share IDs row for row, so they must be in step.
+    first_tracklet_id, observation_id = next_ids(clean_output)
+    if next_ids(noisy_output) != (first_tracklet_id, observation_id):
+        raise ValueError(
+            f"{clean_output} and {noisy_output} are out of sync; "
+            f"delete both and regenerate."
+        )
 
     # Outer loop: create one independent observing station per tracklet.
     for i in range(num_of_sites):
         tracklet_id = first_tracklet_id + i
+
+        # One constant RA bias and one constant Dec bias for this tracklet,
+        # applied only to the noisy file.
+        ra_bias = np.random.normal(0.0, sigma_systematic)
+        dec_bias = np.random.normal(0.0, sigma_systematic)
 
         # Inner loop: observations from the same station.
         for j in range(num_of_pts_in_each_site):
@@ -773,7 +796,15 @@ if __name__ == "__main__":
 
             # Geometric topocentric RA/Dec from the updated station position.
             # Convert station position to km before subtraction.
-            radec = gcrs_to_radec(rv[0, 0:3] - r_site / 1000)
+            ra_true, dec_true = gcrs_to_radec(rv[0, 0:3] - r_site / 1000)
+
+            # Noisy angles: per-tracklet bias plus fresh per-observation noise.
+            ra_noisy = (
+                ra_true + ra_bias + np.random.normal(0.0, sigma_relative)
+            ) % (2.0 * np.pi)
+            dec_noisy = (
+                dec_true + dec_bias + np.random.normal(0.0, sigma_relative)
+            )
 
             # Preserve the original 12 columns, then station velocity, then IDs:
             # rx, ry, rz, vx, vy, vz, ra, dec,
@@ -781,16 +812,24 @@ if __name__ == "__main__":
             # tracklet_id, observation_id
             # Satellite position: km; station position: m.
             # Both velocities: km/s; angles: radians; elapsed time: seconds.
-            with open(output_dir, 'a') as f:
-                f.write(
-                    f"{rv[0,0]},{rv[0,1]},{rv[0,2]},"
-                    f"{rv[0,3]},{rv[0,4]},{rv[0,5]},"
-                    f"{radec[0]},{radec[1]},"
-                    f"{r_site[0]},{r_site[1]},{r_site[2]},"
-                    f"{measurement_time},"
-                    f"{v_site[0]},{v_site[1]},{v_site[2]},"
-                    f"{tracklet_id},{observation_id}\n"
-                )
+            # The satellite state is the true state in both files; only the
+            # measured angles differ.
+            row_head = (
+                f"{rv[0,0]},{rv[0,1]},{rv[0,2]},"
+                f"{rv[0,3]},{rv[0,4]},{rv[0,5]},"
+            )
+            row_tail = (
+                f"{r_site[0]},{r_site[1]},{r_site[2]},"
+                f"{measurement_time},"
+                f"{v_site[0]},{v_site[1]},{v_site[2]},"
+                f"{tracklet_id},{observation_id}\n"
+            )
+
+            with open(clean_output, 'a') as f:
+                f.write(row_head + f"{ra_true},{dec_true}," + row_tail)
+
+            with open(noisy_output, 'a') as f:
+                f.write(row_head + f"{ra_noisy},{dec_noisy}," + row_tail)
 
             observation_id += 1
                 
