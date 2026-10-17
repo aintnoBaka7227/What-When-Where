@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import numpy as np
 from numba import jit
 from scipy.spatial.transform import Rotation as R
@@ -563,37 +566,145 @@ def radec_to_point(radec):
 
 NEAR_GEO_ORBIT_RANGE_A = [38000, 45000]  # km
 
-# Number of comma-separated columns in each output row, including the two
-# trailing ID columns (tracklet_id, observation_id).
-NUM_OF_OUTPUT_COLUMNS = 17
+# Relative angular noise levels tested by Siminski et al. (2014), Section 6.1:
+# sigma_alpha,delta in {0.7", 1.2", 2"}. Every run writes one noisy file per level.
+RELATIVE_NOISE_CASES_ARCSEC = [0.7, 1.2, 2.0]  # arcsec
+
+# Output row layout. Columns 0-16 match new_data_gen.py's dataset layout;
+# column 17 is an extra per-observation ID.
+#   0-2   satellite position rx, ry, rz (GCRS)    km
+#   3-5   satellite velocity vx, vy, vz (GCRS)    km/s
+#   6-7   topocentric RA, Dec                     rad
+#   8-10  station position (GCRS)                 km
+#   11-13 station velocity (GCRS)                 km/s
+#   14    time since epoch                        s
+#   15    tracklet_id
+#   16    object_id
+#   17    observation_id
+NUM_OF_OUTPUT_COLUMNS = 18
+TRACKLET_ID_COLUMN = 15
+OBJECT_ID_COLUMN = 16
+OBSERVATION_ID_COLUMN = 17
 
 
 def next_ids(output_path):
     """
-    Return the next unused (tracklet_id, observation_id) for an output file.
+    Return the next unused (tracklet_id, object_id, observation_id) for an
+    output file.
 
     The output file is appended to across runs, so IDs continue from the last
     row already written rather than restarting at zero. A missing or empty file
-    starts both IDs at zero.
+    starts all IDs at zero.
     """
     try:
         with open(output_path, 'r') as f:
             lines = [line for line in f if line.strip()]
     except FileNotFoundError:
-        return 0, 0
+        return 0, 0, 0
 
     if not lines:
-        return 0, 0
+        return 0, 0, 0
 
     last_row = lines[-1].strip().split(',')
     if len(last_row) != NUM_OF_OUTPUT_COLUMNS:
         raise ValueError(
             f"{output_path} has {len(last_row)} columns per row, expected "
             f"{NUM_OF_OUTPUT_COLUMNS}. It was written by an older version of "
-            f"this script without ID columns; delete it and regenerate."
+            f"this script with a different column layout; delete it and "
+            f"regenerate."
         )
 
-    return int(last_row[-2]) + 1, int(last_row[-1]) + 1
+    return (
+        int(last_row[TRACKLET_ID_COLUMN]) + 1,
+        int(last_row[OBJECT_ID_COLUMN]) + 1,
+        int(last_row[OBSERVATION_ID_COLUMN]) + 1,
+    )
+
+
+def load_settings_record(settings_path, settings, num_existing_objects):
+    """
+    Load the settings record that accompanies the data files, or start one.
+
+    The record holds the run-independent generation settings once, plus one
+    entry per generated object. Because the data files are appended to across
+    runs, every run must use the same settings; this raises before any data is
+    written if the current settings differ from the recorded ones, or if the
+    record does not cover the objects already in the data files.
+    """
+    try:
+        with open(settings_path, 'r') as f:
+            record = json.load(f)
+    except FileNotFoundError:
+        record = None
+
+    if record is None:
+        if num_existing_objects != 0:
+            raise ValueError(
+                f"{settings_path} is missing but the data files already hold "
+                f"{num_existing_objects} object(s); delete all "
+                f"generated_data_gcrs_* files and regenerate."
+            )
+        return {'settings': settings, 'objects': []}
+
+    if record['settings'] != settings:
+        changed = sorted(
+            key for key in set(record['settings']) | set(settings)
+            if record['settings'].get(key) != settings.get(key)
+        )
+        raise ValueError(
+            f"Current settings differ from those recorded in {settings_path} "
+            f"({', '.join(changed)}). Appending would mix datasets generated "
+            f"with different settings; delete all generated_data_gcrs_* files "
+            f"to start a new dataset, or restore the recorded settings."
+        )
+
+    if len(record['objects']) != num_existing_objects:
+        raise ValueError(
+            f"{settings_path} records {len(record['objects'])} object(s) but "
+            f"the data files hold {num_existing_objects}; delete all "
+            f"generated_data_gcrs_* files and regenerate."
+        )
+
+    return record
+
+
+def fix_station_to_earth(site_gcrs_m, observation_time):
+    """
+    Attach a GCRS point to the rotating Earth.
+
+    site_gcrs_m is a station position along GCRS axes, in meters, valid at
+    observation_time. It is converted once to ITRS, the Earth-fixed frame, so
+    the returned EarthLocation is the patch of ground under that point and
+    rotates with Earth from then on.
+    """
+    site_gcrs = GCRS(
+        CartesianRepresentation(site_gcrs_m * u.m),
+        obstime=observation_time,
+    )
+    site_itrs = site_gcrs.transform_to(ITRS(obstime=observation_time))
+
+    return EarthLocation.from_geocentric(
+        site_itrs.cartesian.x,
+        site_itrs.cartesian.y,
+        site_itrs.cartesian.z,
+    )
+
+
+def station_gcrs_state(station, observation_time):
+    """
+    Return a ground station's GCRS position (km) and velocity (km/s).
+
+    Astropy rotates the station's fixed ITRS coordinates into GCRS at
+    observation_time, including Earth rotation, precession, nutation and polar
+    motion. The velocity is the station's motion as Earth carries it around,
+    the r_s-dot term of Siminski et al. (2014) Eq. (6).
+    """
+    site_position, site_velocity = station.get_gcrs_posvel(observation_time)
+
+    r_site = site_position.xyz.to_value(u.km)
+    v_site = site_velocity.xyz.to_value(u.km / u.s)
+
+    return r_site, v_site
 
 
 if __name__ == "__main__":
@@ -601,12 +712,35 @@ if __name__ == "__main__":
     # or 'd' to use the other eccentricity/perigee-radius ranges below.
     test_case = 'a'
 
+    # Eccentricity range of each test case. All cases share the semi-major axis
+    # range NEAR_GEO_ORBIT_RANGE_A.
+    eccentricity_ranges = {
+        'a': [0.0, 0.01],   # near-circular: the paper's near-GEO case
+        'b': [0.01, 0.2],
+        'c': [0.2, 0.4],
+        'd': [0.4, 0.6],
+    }
+    a_min, a_max = NEAR_GEO_ORBIT_RANGE_A  # km
+
+    # Settings record: the run-independent settings plus every object's drawn
+    # orbit, stations and biases, so a dataset can be described and audited.
+    # All outputs go to the project's data/ folder, resolved from this file's
+    # location so the working directory does not matter.
+    data_dir = Path(__file__).resolve().parent.parent / 'data'
+    data_dir.mkdir(exist_ok=True)
+
+    settings_output = data_dir / 'generated_data_gcrs_settings.json'
+
     # Output files. The script opens these in append mode later, so repeated
-    # runs add rows instead of replacing old rows. Both files are written from
+    # runs add rows instead of replacing old rows. All files are written from
     # the same orbit, stations and epochs and differ only in the RA/Dec columns:
-    # the clean file holds the true angles, the noisy file adds measurement error.
-    clean_output = 'generated_data_gcrs_clean.txt'
-    noisy_output = 'generated_data_gcrs_noisy.txt'
+    # the clean file holds the true angles, each noisy file adds measurement
+    # error at one relative noise level, named in its filename.
+    clean_output = data_dir / 'generated_data_gcrs_clean.txt'
+    noisy_outputs = {
+        sigma_arcsec: data_dir / f'generated_data_gcrs_noisy_{sigma_arcsec}as.txt'
+        for sigma_arcsec in RELATIVE_NOISE_CASES_ARCSEC
+    }
 
     # Siminski et al. (2014) measurement-error model (Section 6.1).
     # Relative noise is redrawn for every observation; the systematic error is
@@ -614,7 +748,6 @@ if __name__ == "__main__":
     # exposure-epoch offset. Set sigma_systematic to 0 for relative noise only.
     # RA noise is not divided by cos(dec), matching new_data_gen.py.
     ARCSEC = np.deg2rad(1.0 / 3600.0)
-    sigma_relative = 0.7 * ARCSEC     # rad
     sigma_systematic = 5.0 * ARCSEC   # rad
 
     # Each test case builds one random set of classical orbital elements:
@@ -623,8 +756,8 @@ if __name__ == "__main__":
     # ohm is RAAN, omega is argument of perigee, and v is true anomaly.
     if test_case == 'a': # nearly circular orbital test case
         # Eccentricity 0-0.01; rp chosen so semi-major axis is 38000-45000 km.
-        e = np.random.uniform(0, 0.01)
-        coe_oe = np.array([np.random.uniform(38000 * (1 - e), 45000 * (1 - e)),
+        e = np.random.uniform(*eccentricity_ranges['a'])
+        coe_oe = np.array([np.random.uniform(a_min * (1 - e), a_max * (1 - e)),
                         e, #e
                         np.random.uniform(np.deg2rad(1), np.deg2rad(179)), #i
                         np.random.uniform(0, 2 * np.pi), #ohm
@@ -632,8 +765,8 @@ if __name__ == "__main__":
                         np.random.uniform(0, 2 * np.pi)]) #v
     elif test_case == 'b':
         # Eccentricity 0.01-0.2; rp chosen so semi-major axis is 38000-45000 km.
-        e = np.random.uniform(0.01, 0.2)
-        coe_oe = np.array([np.random.uniform(38000 * (1 - e), 45000 * (1 - e)),
+        e = np.random.uniform(*eccentricity_ranges['b'])
+        coe_oe = np.array([np.random.uniform(a_min * (1 - e), a_max * (1 - e)),
                         e,  # e
                         np.random.uniform(np.deg2rad(1), np.deg2rad(179)),  # i
                         np.random.uniform(0, 2 * np.pi),  # ohm
@@ -641,8 +774,8 @@ if __name__ == "__main__":
                         np.random.uniform(0, 2 * np.pi)])  # v
     elif test_case == 'c':
         # Eccentricity 0.2-0.4; rp chosen so semi-major axis is 38000-45000 km.
-        e = np.random.uniform(0.2, 0.4)
-        coe_oe = np.array([np.random.uniform(38000 * (1 - e), 45000 * (1 - e)),
+        e = np.random.uniform(*eccentricity_ranges['c'])
+        coe_oe = np.array([np.random.uniform(a_min * (1 - e), a_max * (1 - e)),
                         e,  # e
                         np.random.uniform(np.deg2rad(1), np.deg2rad(179)),  # i
                         np.random.uniform(0, 2 * np.pi),  # ohm
@@ -650,8 +783,8 @@ if __name__ == "__main__":
                         np.random.uniform(0, 2 * np.pi)])  # v
     elif test_case == 'd':
         # Eccentricity 0.4-0.6; rp chosen so semi-major axis is 38000-45000 km.
-        e = np.random.uniform(0.4, 0.6)
-        coe_oe = np.array([np.random.uniform(38000 * (1 - e), 45000 * (1 - e)),
+        e = np.random.uniform(*eccentricity_ranges['d'])
+        coe_oe = np.array([np.random.uniform(a_min * (1 - e), a_max * (1 - e)),
                         e,  # e
                         np.random.uniform(np.deg2rad(1), np.deg2rad(179)),  # i
                         np.random.uniform(0, 2 * np.pi),  # ohm
@@ -695,21 +828,78 @@ if __name__ == "__main__":
     epoch = Time("2012-08-18T22:59:08", scale="utc")
 
     # Unique IDs, continued from any rows already in the output files:
-    # one tracklet_id per site window, one observation_id per row. The clean
-    # and noisy files share IDs row for row, so they must be in step.
-    first_tracklet_id, observation_id = next_ids(clean_output)
-    if next_ids(noisy_output) != (first_tracklet_id, observation_id):
-        raise ValueError(
-            f"{clean_output} and {noisy_output} are out of sync; "
-            f"delete both and regenerate."
-        )
+    # one object_id per run, one tracklet_id per site window, one
+    # observation_id per row. The clean and noisy files share IDs row for row,
+    # so they must all be in step.
+    first_tracklet_id, object_id, observation_id = next_ids(clean_output)
+    for noisy_output in noisy_outputs.values():
+        if next_ids(noisy_output) != (first_tracklet_id, object_id, observation_id):
+            raise ValueError(
+                f"{clean_output} and {noisy_output} are out of sync; "
+                f"delete all generated_data_gcrs_* files and regenerate."
+            )
+
+    # Run-independent settings. Every run appending to the same data files
+    # must use exactly these, which load_settings_record enforces.
+    settings = {
+        'frame': 'GCRS',
+        'dynamics': 'two-body (point-mass Earth)',
+        'epoch_utc': epoch.utc.isot,
+        'mu_km3_s2': mu,
+        'earth_radius_km': R_EARTH / 1000.0,
+        'test_case': test_case,
+        'semi_major_axis_range_km': [a_min, a_max],
+        'eccentricity_range': eccentricity_ranges[test_case],
+        'inclination_range_deg': [1.0, 179.0],
+        'station_max_offset_from_subsatellite_deg': 45.0,
+        'num_of_tracklets_per_object': num_of_sites,
+        'time_between_tracklet_starts_s': time_interval_between_sites,
+        'num_of_observations_per_tracklet': num_of_pts_in_each_site,
+        'tracklet_duration_s': measurement_time_in_each_site,
+        'time_between_observations_s': measurement_time_interval_within_each_site,
+        'relative_noise_levels_arcsec': RELATIVE_NOISE_CASES_ARCSEC,
+        'systematic_noise_arcsec': sigma_systematic / ARCSEC,
+        'noise_draws': 'unit normals shared across noise levels, scaled by sigma',
+        'ra_noise_divided_by_cos_dec': False,
+        'clean_file': clean_output.name,
+        'noisy_files': {
+            f'{sigma_arcsec}': path.name for sigma_arcsec, path in noisy_outputs.items()
+        },
+        'columns': [
+            'rx_km', 'ry_km', 'rz_km',
+            'vx_km_s', 'vy_km_s', 'vz_km_s',
+            'ra_rad', 'dec_rad',
+            'site_x_km', 'site_y_km', 'site_z_km',
+            'site_vx_km_s', 'site_vy_km_s', 'site_vz_km_s',
+            'time_s', 'tracklet_id', 'object_id', 'observation_id',
+        ],
+    }
+    settings_record = load_settings_record(settings_output, settings, object_id)
+
+    # This object's randomly drawn values, added to the settings record after
+    # its rows are written.
+    object_record = {
+        'object_id': object_id,
+        'orbital_elements': {
+            'perigee_radius_km': coe_oe[0],
+            'semi_major_axis_km': eq_oe[0],
+            'eccentricity': coe_oe[1],
+            'inclination_deg': np.rad2deg(coe_oe[2]),
+            'raan_deg': np.rad2deg(coe_oe[3]),
+            'argument_of_perigee_deg': np.rad2deg(coe_oe[4]),
+            'true_anomaly_deg': np.rad2deg(coe_oe[5]),
+            'period_h': 2 * np.pi * np.sqrt(eq_oe[0] ** 3 / mu) / 3600.0,
+        },
+        'initial_state_km_km_s': rv_init[0].tolist(),
+        'tracklets': [],
+    }
 
     # Outer loop: create one independent observing station per tracklet.
     for i in range(num_of_sites):
         tracklet_id = first_tracklet_id + i
 
         # One constant RA bias and one constant Dec bias for this tracklet,
-        # applied only to the noisy file.
+        # applied identically to every noisy file.
         ra_bias = np.random.normal(0.0, sigma_systematic)
         dec_bias = np.random.normal(0.0, sigma_systematic)
 
@@ -762,74 +952,78 @@ if __name__ == "__main__":
                 rotated_rsite = np.matmul(curr_R_mat, rsite)
                 rotated_rsite = rotated_rsite * R_EARTH
 
-                # Interpret the selected initial position along GCRS axes
-                # at this tracklet's first observation time.
-                initial_site_gcrs = GCRS(
-                    CartesianRepresentation(rotated_rsite * u.m),
-                    obstime=observation_time,
-                )
+                # Attach the chosen GCRS point to the ground at this tracklet's
+                # first observation time, and keep that station for all
+                # observations in this tracklet.
+                station = fix_station_to_earth(rotated_rsite, observation_time)
 
-                # Convert once to ITRS to identify the corresponding spot
-                # attached to Earth's surface.
-                initial_site_itrs = initial_site_gcrs.transform_to(
-                    ITRS(obstime=observation_time)
-                )
-
-                # Store this station for all observations in this tracklet.
-                station = EarthLocation.from_geocentric(
-                    initial_site_itrs.cartesian.x,
-                    initial_site_itrs.cartesian.y,
-                    initial_site_itrs.cartesian.z,
-                )
+                object_record['tracklets'].append({
+                    'tracklet_id': tracklet_id,
+                    'start_time_s': measurement_time,
+                    'station_lat_deg': station.lat.deg,
+                    'station_lon_deg': station.lon.deg,
+                    'station_offset_from_subsatellite_deg': np.rad2deg(rot_angle),
+                    'ra_systematic_bias_arcsec': ra_bias / ARCSEC,
+                    'dec_systematic_bias_arcsec': dec_bias / ARCSEC,
+                })
 
             # For every observation, calculate this station's current GCRS
-            # position and velocity as Earth carries it around.
-            site_position, site_velocity = station.get_gcrs_posvel(
-                observation_time
-            )
-
-            # Preserve the original station-position output units: meters.
-            r_site = site_position.xyz.to_value(u.m)
-
-            # Station velocity in km/s, matching satellite velocity units.
-            v_site = site_velocity.xyz.to_value(u.km / u.s)
+            # position (km) and velocity (km/s) as Earth carries it around.
+            r_site, v_site = station_gcrs_state(station, observation_time)
 
             # Geometric topocentric RA/Dec from the updated station position.
-            # Convert station position to km before subtraction.
-            ra_true, dec_true = gcrs_to_radec(rv[0, 0:3] - r_site / 1000)
+            ra_true, dec_true = gcrs_to_radec(rv[0, 0:3] - r_site)
 
-            # Noisy angles: per-tracklet bias plus fresh per-observation noise.
-            ra_noisy = (
-                ra_true + ra_bias + np.random.normal(0.0, sigma_relative)
-            ) % (2.0 * np.pi)
-            dec_noisy = (
-                dec_true + dec_bias + np.random.normal(0.0, sigma_relative)
-            )
+            # Fresh per-observation noise, drawn once as a unit normal and then
+            # scaled to each noise level. The noisy files therefore share the
+            # same underlying draws and differ only in noise amplitude, so a
+            # change in results between levels is due to sigma, not to luck.
+            ra_unit_noise = np.random.normal(0.0, 1.0)
+            dec_unit_noise = np.random.normal(0.0, 1.0)
 
-            # Preserve the original 12 columns, then station velocity, then IDs:
-            # rx, ry, rz, vx, vy, vz, ra, dec,
-            # site_x, site_y, site_z, time, site_vx, site_vy, site_vz,
-            # tracklet_id, observation_id
-            # Satellite position: km; station position: m.
-            # Both velocities: km/s; angles: radians; elapsed time: seconds.
-            # The satellite state is the true state in both files; only the
-            # measured angles differ.
+            # Row layout is documented at NUM_OF_OUTPUT_COLUMNS. RA/Dec sit
+            # between row_head and row_tail. The satellite state is the true
+            # state in every file; only the measured angles differ.
             row_head = (
                 f"{rv[0,0]},{rv[0,1]},{rv[0,2]},"
                 f"{rv[0,3]},{rv[0,4]},{rv[0,5]},"
             )
             row_tail = (
                 f"{r_site[0]},{r_site[1]},{r_site[2]},"
-                f"{measurement_time},"
                 f"{v_site[0]},{v_site[1]},{v_site[2]},"
-                f"{tracklet_id},{observation_id}\n"
+                f"{measurement_time},"
+                f"{tracklet_id},{object_id},{observation_id}\n"
             )
 
             with open(clean_output, 'a') as f:
                 f.write(row_head + f"{ra_true},{dec_true}," + row_tail)
 
-            with open(noisy_output, 'a') as f:
-                f.write(row_head + f"{ra_noisy},{dec_noisy}," + row_tail)
+            # Noisy angles: per-tracklet bias plus scaled per-observation noise.
+            for sigma_arcsec, noisy_output in noisy_outputs.items():
+                sigma_relative = sigma_arcsec * ARCSEC  # rad
+                ra_noisy = (
+                    ra_true + ra_bias + sigma_relative * ra_unit_noise
+                ) % (2.0 * np.pi)
+                dec_noisy = dec_true + dec_bias + sigma_relative * dec_unit_noise
+
+                with open(noisy_output, 'a') as f:
+                    f.write(row_head + f"{ra_noisy},{dec_noisy}," + row_tail)
 
             observation_id += 1
+
+    # Record this object and rewrite the settings file. Values are converted
+    # to plain floats so the JSON holds ordinary numbers.
+    def to_builtin(value):
+        if isinstance(value, dict):
+            return {key: to_builtin(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [to_builtin(item) for item in value]
+        if isinstance(value, np.generic):
+            return value.item()
+        return value
+
+    settings_record['objects'].append(to_builtin(object_record))
+    with open(settings_output, 'w') as f:
+        json.dump(to_builtin(settings_record), f, indent=2)
+        f.write('\n')
                 
