@@ -3,6 +3,7 @@
 Each function reads a run's output folder and returns a plain dict, which
 experiment/run/ saves as metrics.json in that run's folder:
 
+    data_metrics         is the dataset what it claims to be, and realistic?
     hypothesis_metrics   is the truth inside the admissible region? (Eqs. 22, 29)
     scoring_metrics      does the loss score the truth as a match? (Eq. 18)
     search_metrics       did the optimiser reach the right answer? (Eq. 30)
@@ -12,10 +13,14 @@ Truth comes from columns 0-5 of the data matrix, which only metrics may read.
 Those columns are the same in every chain, so they are read from clean.
 """
 
+import json
+from itertools import combinations
+
 import numpy as np
 from astropy.constants import GM_earth
+from scipy import stats
 
-from lab.data.dataset import VARIANTS
+from lab.data.dataset import NOISY_VARIANTS, VARIANTS
 
 # km^3/s^2, matches the rest of the project.
 MU = GM_earth.value / 1_000_000_000.0
@@ -23,6 +28,14 @@ MU = GM_earth.value / 1_000_000_000.0
 # The optimiser's penalty for a hypothesis with no Lambert solution, matching
 # _INFEASIBLE_PENALTY in src/lab/search/optimise_hypothesis.py.
 INFEASIBLE_PENALTY = 1.0e12
+
+ARCSEC = np.deg2rad(1.0 / 3600.0)
+
+# Earth's rotation rate, the sky motion of a geostationary object.
+GEO_RATE_ARCSEC_S = 15.04
+
+# A pair within this of 0 or 180 degrees counts as near-degenerate.
+NEAR_DEGENERATE_DEG = 5.0
 
 # Fig. 9's threshold axis runs from 1 to 20. L* is only on that scale in the
 # noisy chains; the clean loss has different units.
@@ -87,6 +100,182 @@ class Truth:
 
 def share(count, total):
     return float(count / total) if total else None
+
+
+def uniform_fit(values, low, high):
+    """Kolmogorov-Smirnov test of values against a uniform distribution."""
+    result = stats.kstest(values, "uniform", args=(low, high - low))
+    return {
+        "n": len(values),
+        "min": float(np.min(values)),
+        "max": float(np.max(values)),
+        "expected_range": [float(low), float(high)],
+        "ks_p_value": float(result.pvalue),
+    }
+
+
+def normal_fit(values, sigma):
+    """Kolmogorov-Smirnov test of values against a zero-mean normal distribution."""
+    result = stats.kstest(values, "norm", args=(0.0, sigma))
+    return {
+        "n": len(values),
+        "mean": float(np.mean(values)),
+        "sd": float(np.std(values, ddof=1)),
+        "expected_sd": float(sigma),
+        "ks_p_value": float(result.pvalue),
+    }
+
+
+def orbit_elements(state):
+    """(a, e, inclination in degrees) of a Cartesian state, without the generator."""
+    r, v = state[:3], state[3:6]
+    r_mag = np.linalg.norm(r)
+    h = np.cross(r, v)
+    a = 1.0 / (2.0 / r_mag - np.dot(v, v) / MU)
+    e = np.linalg.norm(np.cross(v, h) / MU - r / r_mag)
+    inclination = np.degrees(np.arccos(h[2] / np.linalg.norm(h)))
+    return a, e, inclination
+
+
+def on_sky_rate_arcsec_s(tracklet_rows):
+    """Straight-line fit to a tracklet's clean RA/Dec, as motion across the sky."""
+    times = tracklet_rows[:, 14]
+    ra_rate = np.polyfit(times, np.unwrap(tracklet_rows[:, 6]), 1)[0]
+    dec_rate = np.polyfit(times, tracklet_rows[:, 7], 1)[0]
+    cos_dec = np.cos(tracklet_rows[:, 7].mean())
+    return float(np.hypot(ra_rate * cos_dec, dec_rate)) / ARCSEC
+
+
+def data_metrics(output_dir):
+    """Layers 2 and 3 of validating stage 1: statistics and realism.
+
+    Each drawn quantity is tested against the distribution it should follow,
+    recomputed from the rows rather than from the generator's own draws where
+    possible. A KS p-value below about 0.01 means the draws do not fit. With few
+    objects these tests have little power, so judge them on 100 or more.
+    """
+    with (output_dir / "generated_data_gcrs_settings.json").open() as handle:
+        record = json.load(handle)
+    settings, objects = record["settings"], record["objects"]
+    rows = np.loadtxt(output_dir / "generated_data_gcrs_clean.txt", delimiter=",", ndmin=2)
+
+    per_tracklet = settings["num_of_observations_per_tracklet"]
+    first_rows = rows[::per_tracklet]
+    elements = np.array([
+        orbit_elements(rows[rows[:, 16] == obj["object_id"]][0]) for obj in objects
+    ])
+
+    # Population, from the rows.
+    population = {
+        "semi_major_axis_km": uniform_fit(elements[:, 0], *settings["semi_major_axis_range_km"]),
+        "eccentricity": uniform_fit(elements[:, 1], *settings["eccentricity_range"]),
+        "inclination_deg": uniform_fit(elements[:, 2], *settings["inclination_range_deg"]),
+    }
+
+    # Stations: the true offset at each tracklet's first observation.
+    cosine = np.sum(first_rows[:, :3] * first_rows[:, 8:11], axis=1) / (
+        np.linalg.norm(first_rows[:, :3], axis=1) * np.linalg.norm(first_rows[:, 8:11], axis=1)
+    )
+    offsets = np.degrees(np.arccos(cosine))
+
+    line_of_sight = rows[:, :3] - rows[:, 8:11]
+    up = rows[:, 8:11] / np.linalg.norm(rows[:, 8:11], axis=1, keepdims=True)
+    elevation = np.degrees(np.arcsin(
+        np.sum(up * line_of_sight, axis=1) / np.linalg.norm(line_of_sight, axis=1)
+    ))
+
+    # Timing, relative to the schedule.
+    starts_h = first_rows[:, 14].reshape(len(objects), -1) / 3600.0
+    schedule = np.array(settings["tracklet_schedule_h"])
+    jitter = (starts_h - starts_h[:, :1] - schedule)[:, 1:].ravel()
+    max_jitter = settings["max_tracklet_jitter_h"]
+
+    # Noise: each chain's residual once the recorded bias is removed.
+    biases = np.array([
+        (t["ra_systematic_bias_arcsec"], t["dec_systematic_bias_arcsec"])
+        for obj in objects for t in obj["tracklets"]
+    ])
+    noise = {}
+    for variant, sigma in NOISY_VARIANTS.items():
+        noisy = np.loadtxt(
+            output_dir / f"generated_data_gcrs_{variant}.txt", delimiter=",", ndmin=2,
+        )
+        difference = np.column_stack((
+            (noisy[:, 6] - rows[:, 6] + np.pi) % (2.0 * np.pi) - np.pi,
+            noisy[:, 7] - rows[:, 7],
+        )) / ARCSEC
+        residual = difference - np.repeat(biases, per_tracklet, axis=0)
+        noise[variant] = normal_fit(residual.ravel(), sigma)
+
+    # Geometry of the pairs.
+    near_degenerate = []
+    for obj in objects:
+        positions = first_rows[first_rows[:, 16] == obj["object_id"], :3]
+        for r1, r2 in combinations(positions, 2):
+            angle = np.degrees(np.arccos(np.clip(
+                np.dot(r1, r2) / (np.linalg.norm(r1) * np.linalg.norm(r2)), -1.0, 1.0,
+            )))
+            near_degenerate.append(min(angle, 180.0 - angle) < NEAR_DEGENERATE_DEG)
+
+    # Realism against the paper.
+    rates = np.array([
+        on_sky_rate_arcsec_s(rows[rows[:, 15] == tracklet])
+        for tracklet in np.unique(rows[:, 15])
+    ])
+    duration = settings["tracklet_duration_s"]
+
+    return {
+        "statistics": {
+            "population": population,
+            "station_offset_deg": uniform_fit(
+                offsets, 0.0, settings["station_max_offset_from_subsatellite_deg"],
+            ),
+            "elevation_deg": {"min": float(elevation.min()), "max": float(elevation.max())},
+            "start_offset_h": uniform_fit(starts_h[:, 0], 0.0, settings["max_start_offset_h"]),
+            "tracklet_jitter_h": uniform_fit(jitter, -max_jitter, max_jitter),
+            "systematic_bias_arcsec": normal_fit(
+                biases.ravel(), settings["systematic_noise_arcsec"],
+            ),
+            "relative_noise_arcsec": noise,
+            "near_degenerate_pairs": {
+                "pairs": len(near_degenerate),
+                "share": share(sum(near_degenerate), len(near_degenerate)),
+            },
+        },
+        "realism": {
+            "on_sky_rate_arcsec_s": {
+                "median": float(np.median(rates)),
+                "min": float(rates.min()),
+                "max": float(rates.max()),
+                "geostationary_reference": GEO_RATE_ARCSEC_S,
+            },
+            "tracklet_arc_arcmin": float(np.median(rates) * duration / 60.0),
+            "paper_comparison": {
+                "tracklet_duration_s": {"this_dataset": duration, "paper": "60-120"},
+                "observations_per_tracklet": {"this_dataset": per_tracklet, "paper": "3-5"},
+                "observation_spacing_s": {
+                    "this_dataset": settings["time_between_observations_s"],
+                    "paper": "around 20",
+                },
+                "relative_noise_arcsec": {
+                    "this_dataset": settings["relative_noise_levels_arcsec"],
+                    "paper": [0.7, 1.2, 2.0],
+                },
+                "systematic_noise_arcsec": {
+                    "this_dataset": settings["systematic_noise_arcsec"],
+                    "paper": 5.0,
+                },
+                "tracklets_per_object": {
+                    "this_dataset": settings["num_of_tracklets_per_object"],
+                    "paper": "1-2",
+                },
+                "time_span_h": {
+                    "this_dataset": float(first_rows[:, 14].max() / 3600.0),
+                    "paper": "about 27",
+                },
+            },
+        },
+    }
 
 
 def hypothesis_metrics(output_dir):

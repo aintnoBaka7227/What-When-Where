@@ -42,7 +42,7 @@ phase. Stage numbers are the order the stages run in. Generated files go in
 | `experiment/prod/` | — | `prod_<stage>.py`: draws figures from a stage's saved result. |
 | `results/` | — | Run folders and figures, keyed by run hash (not tracked). |
 | `data/` | — | Output of stages run by hand (not tracked). |
-| `test/` | — | Test suites. `test_gcrs_data.py` covers the generator, in a temporary folder. |
+| `test/` | — | Test suites. `test_gcrs_data.py` checks that the generator is self-consistent, and `test_data_validation.py` checks it by independent routes. |
 | `sources/` | — | The paper. |
 
 Two files are worth knowing about before you read any others:

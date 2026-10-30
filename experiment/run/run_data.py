@@ -8,7 +8,8 @@ import json
 
 import numpy as np
 
-from lab.runner import execute, run_script
+from lab.evaluation.metrics import data_metrics
+from lab.runner import execute, run_script, write_metrics
 
 
 def dataset_summary(output_dir):
@@ -42,6 +43,7 @@ def run(objects, force=False):
             if not run_script(tee, "src/lab/data/gcrs_data_generation.py", output_dir):
                 return False
         config["dataset"] = dataset_summary(output_dir)
+        write_metrics(output_dir, data_metrics(output_dir))
         return True
 
     return execute("data", {"objects": objects}, None, body, force)

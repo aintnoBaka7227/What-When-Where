@@ -350,6 +350,9 @@ the 15 is within 5° of 0°/180°, so degeneracy is not the main cause.
 
 | Stage | Metric | Target |
 |---|---|---|
+| Data | Fit of each drawn quantity to its distribution | KS p-value above about 0.01, on 100+ objects |
+| Data | On-sky rate, against a geostationary 15.04″/s | Plausible for the population |
+| Data | Comparison with the paper's Table 2 and Section 6.1 | Report it |
 | Hypothesis | True range inside the bounds | 100% |
 | Hypothesis | True `k` inside the grid | 100% |
 | Scoring | Loss at the true ranges and `k` | Clean near 0; noisy mean near 4 |

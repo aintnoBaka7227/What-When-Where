@@ -210,6 +210,20 @@ a dataset being silently corrupted:
 Run scripts start each dataset empty. To reset a dataset made by hand, delete
 `data/generated_data_gcrs_*`.
 
+### Validation
+
+| Layer | Where | What it checks |
+| --- | --- | --- |
+| Self-consistency | `test/test_gcrs_data.py` | The code does what it records. |
+| Independent routes | `test/test_data_validation.py` | Numerical integration for orbits, ERFA called directly for Earth rotation, and astropy for angles. |
+| Statistics | `metrics.json` from `run_data.py` | Each drawn quantity fits its distribution. Judge these on 100 or more objects. |
+| Realism | `metrics.json` from `run_data.py` | Rates and arc lengths are plausible, and settings match the paper. |
+| End to end | `metrics.json` from `run_scoring.py` | The loss scores the truth as a match. |
+
+Light-time delay and aberration are not simulated. Their effects are around 2″ and
+20″, but the pipeline ignores them too, so the two stay consistent. They would
+matter with real telescope data.
+
 ### Open issues
 
 **Degenerate pairs cannot be removed completely.** Every time gap is degenerate
