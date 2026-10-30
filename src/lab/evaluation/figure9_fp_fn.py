@@ -12,8 +12,8 @@ boundary-value method, and its noisy chain is exactly the paper's 0.7"
 case (0.7" relative + 5" systematic astrometric error), so one panel with
 two curves is the faithful analogue.
 
-    uv run python figures/figure9_fp_fn.py                 # log-T, auto range
-    uv run python figures/figure9_fp_fn.py --paper-range   # linear T in [1, 20]
+    uv run python src/lab/evaluation/figure9_fp_fn.py                 # log-T, auto range
+    uv run python src/lab/evaluation/figure9_fp_fn.py --paper-range   # linear T in [1, 20]
 
 --paper-range matches the paper's axis exactly. With the optimiser in its
 current state some true pairs do not converge, so L* for those stays far
@@ -27,24 +27,15 @@ Writes figures/figure9_fp_fn_<variant>[_paper-range].png.
 import argparse
 import contextlib
 import io
-import sys
-from pathlib import Path
 
 import numpy as np
 
 import matplotlib
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
+import matplotlib.pyplot as plt
 
-# Pipeline stages import from sibling directories, not a package, so add
-# them to the path before importing (same pattern as the other scripts).
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-for _sub in ("optimisation", "orbit", "hypothesis", "modelled", "discriminator"):
-    sys.path.insert(0, str(_PROJECT_ROOT / _sub))
-
-from optimise_hypothesis import run_association_test  # noqa: E402
-
-_FIG_DIR = Path(__file__).resolve().parent
+from lab.search.optimise_hypothesis import run_association_test
+from lab.paths import FIGURES_DIR, PROJECT_ROOT
 
 
 def sweep(true_losses, false_losses, thresholds):
@@ -138,12 +129,13 @@ def main():
     ax_fn.legend(handles=[l1, l2], loc="center right", framealpha=0.9)
 
     fig.tight_layout()
-    out = _FIG_DIR / (
+    FIGURES_DIR.mkdir(exist_ok=True)
+    out = FIGURES_DIR / (
         f"figure9_fp_fn_{args.variant}"
         f"{'_paper-range' if args.paper_range else ''}.png"
     )
     fig.savefig(out, dpi=150)
-    print(f"wrote {out.relative_to(_PROJECT_ROOT)}")
+    print(f"wrote {out.relative_to(PROJECT_ROOT)}")
 
 
 if __name__ == "__main__":

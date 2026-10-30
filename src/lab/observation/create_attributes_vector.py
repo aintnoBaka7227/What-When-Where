@@ -1,13 +1,11 @@
-from pathlib import Path
 
 import numpy as np
 
-from fit_attributes import fit_attributes
+from lab.paths import DATA_DIR
+from lab.observation.fit_attributes import fit_attributes
 
-THIS_DIR = Path(__file__).resolve().parent
-SIMULATION_DIR = THIS_DIR.parent / "simulation"
 
-# simulation/new_data_gen.py writes its clean and noisy datasets together from
+# src/lab/data/new_data_gen.py writes its clean and noisy datasets together from
 # one orbit, one set of stations and one set of observation epochs. The only
 # columns that differ between them are the measured RA/Dec pair, so both are
 # fitted here by the same code with the same tracklet grouping, and the two
@@ -17,15 +15,15 @@ SIMULATION_DIR = THIS_DIR.parent / "simulation"
 DATASETS = (
     (
         "clean",
-        SIMULATION_DIR / "generated_data_clean.npz",
-        THIS_DIR / "generated_attributables_clean.npz",
-        THIS_DIR / "generated_attributables_clean.txt",
+        DATA_DIR / "generated_data_clean.npz",
+        DATA_DIR / "generated_attributables_clean.npz",
+        DATA_DIR / "generated_attributables_clean.txt",
     ),
     (
         "noisy",
-        SIMULATION_DIR / "generated_data_noisy.npz",
-        THIS_DIR / "generated_attributables_noisy.npz",
-        THIS_DIR / "generated_attributables_noisy.txt",
+        DATA_DIR / "generated_data_noisy.npz",
+        DATA_DIR / "generated_attributables_noisy.npz",
+        DATA_DIR / "generated_attributables_noisy.txt",
     ),
 )
 
@@ -40,7 +38,7 @@ def build_attributables(
     Parameters
     ----------
     generated_data_file : Path
-        A simulation/new_data_gen.py dataset, clean or noisy.
+        A src/lab/data/new_data_gen.py dataset, clean or noisy.
 
     attributables_npz_file : Path
         Destination for the machine-readable attributables.
@@ -50,7 +48,7 @@ def build_attributables(
     """
     # Load the simulated observations and their angular-error settings.
     #
-    # The input data matrix is created by simulation/new_data_gen.py. The
+    # The input data matrix is created by src/lab/data/new_data_gen.py. The
     # columns used here are:
     #   6  = measured right ascension, alpha (rad)
     #   7  = measured declination, delta (rad)

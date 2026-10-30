@@ -1,7 +1,7 @@
 """Discriminator loss L(p, k) for a boundary-value tracklet-association hypothesis.
 
 Eqs. (16)-(19): score a candidate orbit's modeled rates z_hat_dot
-(modelled/model_rates.py) against the tracklets' measured z_dot.
+(src/lab/model/model_rates.py) against the tracklets' measured z_dot.
 
     z_dot   = (alpha_dot_1, delta_dot_1, alpha_dot_2, delta_dot_2)  Eq. (16)
 
@@ -24,22 +24,15 @@ z (Eq. 14) stays fixed at the fitted values; only p = (rho_1, rho_2) and k
 vary. Its uncertainty enters solely through the Eq. (19) Jacobian.
 """
 
-import sys
-from pathlib import Path
 
 import numpy as np
 from astropy.constants import GM_earth
 
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_PROJECT_ROOT / "orbit"))
-sys.path.insert(0, str(_PROJECT_ROOT / "hypothesis"))
-sys.path.insert(0, str(_PROJECT_ROOT / "modelled"))
+from lab.hypothesis.range_bounds import calculate_u_i
+from lab.model.build_orbit import build_orbit
+from lab.model.model_rates import modeled_angular_rates
 
-from range_bounds import calculate_u_i  # noqa: E402
-from build_orbit import build_orbit  # noqa: E402
-from model_rates import modeled_angular_rates  # noqa: E402
-
-# km^3/s^2, matches simulation/new_data_gen.py and friends.
+# km^3/s^2, matches src/lab/data/new_data_gen.py and friends.
 MU = GM_earth.value / 1_000_000_000.0
 
 # Attributable ordering, fixed throughout this project: [alpha, alpha_dot, delta, delta_dot].
@@ -345,9 +338,9 @@ def evaluate_loss(
     )
 
 
-# Validation lives in discriminator/test_discriminator_loss.py, which
+# Validation lives in test/test_discriminator_loss.py, which
 # checks the Eq. (18) quadratic form against the algebraic identities it
 # must satisfy -- covariance scaling, reduction under C = c*I, and an
 # independent solve() -- plus the Eq. (19) Jacobian's step-size stability:
 #
-#     uv run python discriminator/test_discriminator_loss.py
+#     uv run python test/test_discriminator_loss.py

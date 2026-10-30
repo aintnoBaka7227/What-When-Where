@@ -1,8 +1,8 @@
-"""Validation suite for orbit/lambert.py.
+"""Validation suite for src/lab/model/lambert.py.
 
 Run directly:
 
-    uv run python orbit/test_lambert.py
+    uv run python test/test_lambert.py
 
 Every test exercises the real `lambert_boundary_value`. Nothing here
 reimplements the solver, and -- importantly -- nothing computes its expected
@@ -38,23 +38,16 @@ the minimum loss over both, so a silently invalid second candidate could win
 and produce a confident wrong association.
 """
 
-import sys
-from pathlib import Path
 
 import numpy as np
 from scipy.integrate import solve_ivp
 
-_THIS_DIR = Path(__file__).resolve().parent
-_PROJECT_ROOT = _THIS_DIR.parent
-sys.path.insert(0, str(_THIS_DIR))
-sys.path.insert(0, str(_PROJECT_ROOT / "simulation"))
-
-from lambert import (  # noqa: E402
+from lab.model.lambert import (
     lambert_boundary_value,
     LambertNoSolution,
     k_to_revolutions,
 )
-from new_data_gen import two_body, mu as MU  # noqa: E402
+from lab.data.new_data_gen import two_body, mu as MU
 
 
 # Endpoint closure tolerances. two_body and scipy both land well inside
@@ -393,7 +386,7 @@ def test_non_half_integer_k_is_rejected():
 
     Note this does not test negative k. k_to_revolutions(-0.5) returns
     (-1, True) -- a negative revolution count, which is meaningless -- but
-    lambert_boundary_value refuses it downstream, and hypothesis/k_bounds.py
+    lambert_boundary_value refuses it downstream, and src/lab/hypothesis/k_bounds.py
     never produces a negative k. It is an unreachable input-validation gap,
     not a live bug, so asserting on it here would be testing behaviour the
     function does not promise.
@@ -520,7 +513,7 @@ def main():
         except AssertionError as exc:
             failed.append(name)
             print(f"  FAIL  {name}\n          {exc}")
-        except Exception as exc:  # noqa: BLE001 -- report and continue
+        except Exception as exc:
             failed.append(name)
             print(f"  ERROR {name}\n          {type(exc).__name__}: {exc}")
         else:

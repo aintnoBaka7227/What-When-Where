@@ -47,8 +47,8 @@ Every run is captured to runs/, tied to a timestamp (or the --stamp
         (columns pair, object/tracklet ids, is_true, k, eval, rho_1,
          rho_2, loss) -- for plotting eval-number against log10(L) elsewhere
 
-    uv run python optimisation/validate_optimiser.py            # own timestamp
-    uv run python optimisation/validate_optimiser.py --no-log   # terminal only
+    uv run python src/lab/evaluation/validate_optimiser.py            # own timestamp
+    uv run python src/lab/evaluation/validate_optimiser.py --no-log   # terminal only
 
 This does not fix anything; it is a diagnostic you run when a true pair's
 L* looks wrong.
@@ -59,29 +59,23 @@ import contextlib
 import csv
 import sys
 from datetime import datetime
-from pathlib import Path
 
 import numpy as np
 
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-for _sub in ("orbit", "hypothesis", "modelled", "discriminator"):
-    sys.path.insert(0, str(_PROJECT_ROOT / _sub))
-
-from range_bounds import (  # noqa: E402
+from lab.hypothesis.range_bounds import (
     VARIANTS,
     GENERATED_DATA_FILES,
     ATTRIBUTABLES_FILES,
     population_for,
     v_s_i_at_epoch,
 )
-from k_bounds import k_grid  # noqa: E402
-from build_orbit import RANGE_BOUNDS_FILES, K_BOUNDS_FILES, _lookup_tracklet  # noqa: E402
-from optimise_hypothesis import (  # noqa: E402
+from lab.hypothesis.k_bounds import k_grid
+from lab.model.build_orbit import RANGE_BOUNDS_FILES, K_BOUNDS_FILES, _lookup_tracklet
+from lab.search.optimise_hypothesis import (
     optimize_hypothesis,
     _INFEASIBLE_PENALTY,
 )
-
-_RUNS_DIR = _PROJECT_ROOT / "runs"
+from lab.paths import PROJECT_ROOT, RUNS_DIR
 
 # "No step taken": L-BFGS-B evaluated the objective at least this many times
 # -- its finite-difference gradient told it to move -- yet completed at most
@@ -224,10 +218,10 @@ def _format_trace(running_min, points=16):
 def validate_variant(variant, stamp, write_csv=True):
     """Trace and report every optimisation for one dataset chain."""
     csv_path = (
-        _RUNS_DIR / f"optimiser_history_{variant}_{stamp}.csv" if write_csv else None
+        RUNS_DIR / f"optimiser_history_{variant}_{stamp}.csv" if write_csv else None
     )
     if write_csv:
-        _RUNS_DIR.mkdir(exist_ok=True)
+        RUNS_DIR.mkdir(exist_ok=True)
 
     n_runs = 0
     winners = []  # (label, is_true, best_k, best_loss, best_marker)
@@ -330,7 +324,7 @@ def validate_variant(variant, stamp, write_csv=True):
     print("false pair or a wrong k produces the same short, flat curve. Confirm")
     print("with step 3 -- compare L* against L at the known true ranges.")
     if csv_path is not None:
-        print(f"per-evaluation trace: {csv_path.relative_to(_PROJECT_ROOT)}")
+        print(f"per-evaluation trace: {csv_path.relative_to(PROJECT_ROOT)}")
 
 
 def main():
@@ -352,8 +346,8 @@ def main():
 
     log_file = None
     if not args.no_log:
-        _RUNS_DIR.mkdir(exist_ok=True)
-        log_file = (_RUNS_DIR / f"{stamp}-validate.log").open("w")
+        RUNS_DIR.mkdir(exist_ok=True)
+        log_file = (RUNS_DIR / f"{stamp}-validate.log").open("w")
 
     with _capture_to(log_file):
         if log_file is not None:

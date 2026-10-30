@@ -1,7 +1,8 @@
 import json
-from pathlib import Path
 
 import numpy as np
+
+from lab.paths import DATA_DIR
 from numba import jit
 from scipy.spatial.transform import Rotation as R
 from astropy.constants import GM_earth, R_earth
@@ -726,7 +727,7 @@ if __name__ == "__main__":
     # orbit, stations and biases, so a dataset can be described and audited.
     # All outputs go to the project's data/ folder, resolved from this file's
     # location so the working directory does not matter.
-    data_dir = Path(__file__).resolve().parent.parent / 'data'
+    data_dir = DATA_DIR
     data_dir.mkdir(exist_ok=True)
 
     settings_output = data_dir / 'generated_data_gcrs_settings.json'

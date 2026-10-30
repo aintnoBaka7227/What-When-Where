@@ -1,8 +1,8 @@
-"""Validation suite for discriminator/discriminator_loss.py.
+"""Validation suite for src/lab/scoring/discriminator_loss.py.
 
 Run directly:
 
-    uv run python discriminator/test_discriminator_loss.py
+    uv run python test/test_discriminator_loss.py
 
 Self-contained: the two-tracklet geometry is built here from a known orbit,
 so nothing depends on the pipeline having been run or on any .npz file
@@ -23,20 +23,10 @@ is what makes them usable: a wrong loss fails them, a merely imprecise one
 does not.
 """
 
-import sys
-from pathlib import Path
 
 import numpy as np
 
-_THIS_DIR = Path(__file__).resolve().parent
-_PROJECT_ROOT = _THIS_DIR.parent
-sys.path.insert(0, str(_THIS_DIR))
-sys.path.insert(0, str(_PROJECT_ROOT / "orbit"))
-sys.path.insert(0, str(_PROJECT_ROOT / "hypothesis"))
-sys.path.insert(0, str(_PROJECT_ROOT / "modelled"))
-sys.path.insert(0, str(_PROJECT_ROOT / "simulation"))
-
-from discriminator_loss import (  # noqa: E402
+from lab.scoring.discriminator_loss import (
     MU,
     _RAD_TO_ARCSEC,
     LOSS_FUNCTIONS,
@@ -50,8 +40,8 @@ from discriminator_loss import (  # noqa: E402
     discriminator_loss_unweighted,
     evaluate_loss,
 )
-from model_rates import angle_rate_from_state  # noqa: E402
-from new_data_gen import two_body  # noqa: E402
+from lab.model.model_rates import angle_rate_from_state
+from lab.data.new_data_gen import two_body
 
 EARTH_ROTATION_RATE = 7.292115e-5  # rad/s
 EARTH_RADIUS_KM = 6378.137
@@ -413,7 +403,7 @@ def main():
         except AssertionError as exc:
             failed.append(name)
             print(f"  FAIL  {name}\n          {exc}")
-        except Exception as exc:  # noqa: BLE001 -- report and continue
+        except Exception as exc:
             failed.append(name)
             print(f"  ERROR {name}\n          {type(exc).__name__}: {exc}")
         else:

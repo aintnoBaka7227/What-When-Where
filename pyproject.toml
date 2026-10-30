@@ -13,6 +13,13 @@ dependencies = [
     "scipy>=1.13.1",
 ]
 
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lab"]
+
 [tool.uv]
 # hapsira 0.18.0 caps matplotlib at <3.8, which predates the NumPy 2 ABI
 # and fails to import against this project's NumPy 2.x. We only ever import

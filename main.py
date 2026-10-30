@@ -30,36 +30,37 @@ from datetime import datetime
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+DATA_DIR = PROJECT_ROOT / "data"
 
 # The stages that actually do something, in dependency order.
 #
-# modelled/model_rates.py and discriminator/discriminator_loss.py are
+# src/lab/model/model_rates.py and src/lab/scoring/discriminator_loss.py are
 # deliberately absent. Both are pure libraries now -- they have no __main__
 # and running them produces nothing. They are exercised by the stages that
 # import them, and by their own test suites.
 STAGES = [
-    ("generate",     "simulation/new_data_gen.py",
+    ("generate",     "src/lab/data/new_data_gen.py",
      "draw one near-GEO object and append it to the clean and noisy datasets"),
-    ("attributables", "observation/create_attributes_vector.py",
+    ("attributables", "src/lab/observation/create_attributes_vector.py",
      "compress each tracklet's RA/Dec series into one attributable"),
-    ("range bounds", "hypothesis/range_bounds.py",
+    ("range bounds", "src/lab/hypothesis/range_bounds.py",
      "bound the topocentric range per tracklet (Eqs. 23-24, 26-28)"),
-    ("k bounds",     "hypothesis/k_bounds.py",
+    ("k bounds",     "src/lab/hypothesis/k_bounds.py",
      "bound the revolution parameter per tracklet pair (Eq. 29)"),
-    ("hypotheses",   "orbit/build_orbit.py",
+    ("hypotheses",   "src/lab/model/build_orbit.py",
      "solve Lambert for each range hypothesis (Eq. 5)"),
-    ("associate",    "optimisation/optimise_hypothesis.py",
+    ("associate",    "src/lab/search/optimise_hypothesis.py",
      "minimise the discriminator loss over every pair (Eq. 30)"),
 ]
 
 # Run before the pipeline with --tests. Neither needs generated data.
 TESTS = [
-    ("lambert",       "orbit/test_lambert.py"),
-    ("discriminator", "discriminator/test_discriminator_loss.py"),
+    ("lambert",       "test/test_lambert.py"),
+    ("discriminator", "test/test_discriminator_loss.py"),
 ]
 
 DATASET_FILES = [
-    PROJECT_ROOT / "simulation" / f"generated_data_{variant}.{suffix}"
+    DATA_DIR / f"generated_data_{variant}.{suffix}"
     for variant in ("clean", "noisy")
     for suffix in ("npz", "txt")
 ]
@@ -102,7 +103,7 @@ def run_script(tee, relative_path, indent="      ", script_args=()):
 
 def dataset_summary():
     """Objects and rows currently in the clean dataset, if there is one."""
-    archive_path = PROJECT_ROOT / "simulation" / "generated_data_clean.npz"
+    archive_path = DATA_DIR / "generated_data_clean.npz"
     if not archive_path.exists():
         return "no dataset yet"
 
@@ -142,7 +143,7 @@ def main():
     parser.add_argument(
         "--validate", action="store_true",
         help="after the pipeline, trace every optimisation into a companion "
-             "runs/<timestamp>-validate.log (see optimisation/validate_optimiser.py)",
+             "runs/<timestamp>-validate.log (see src/lab/evaluation/validate_optimiser.py)",
     )
     parser.add_argument(
         "--no-log", action="store_true",
@@ -257,7 +258,7 @@ def main():
 
         tee.write("\n  --validate: tracing every optimisation\n")
         ok, seconds = run_script(
-            None, "optimisation/validate_optimiser.py",
+            None, "src/lab/evaluation/validate_optimiser.py",
             script_args=tuple(script_args),
         )
         tee.write(f"      {'ok' if ok else 'FAILED':>7}  {seconds:7.1f}s\n")

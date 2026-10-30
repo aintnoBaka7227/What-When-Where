@@ -5,8 +5,8 @@ For a fixed k, find
     p_k_min = argmin_{p in C} L(p, k)                                  Eq. (30)
 
 where p = (rho_1, rho_2), C is the admissible region (Eq. 22, i.e. each
-rho_i confined to hypothesis/range_bounds.py's [rho_min_i, rho_max_i]), and
-L is discriminator/discriminator_loss.py's loss. The search is seeded from
+rho_i confined to src/lab/hypothesis/range_bounds.py's [rho_min_i, rho_max_i]), and
+L is src/lab/scoring/discriminator_loss.py's loss. The search is seeded from
 the circular-orbit initial guess
 
     rho_i* = -c_i + sqrt(c_i^2 + a(k)^2 - ||r_s_i||^2)                 Eq. (31)
@@ -18,7 +18,7 @@ k = 0 falling back to the population midpoint -- see
 semi_major_axis_for_k().
 
 discriminator_loss() returns one loss per Lambert candidate (the vacant-
-focus ambiguity for M > 0, see orbit/lambert.py). The optimizer reduces
+focus ambiguity for M > 0, see src/lab/model/lambert.py). The optimizer reduces
 that to a scalar via min() at every trial point, letting the search pick
 whichever candidate fits best rather than committing to one branch label
 across possibly-different trial points.
@@ -31,20 +31,12 @@ step and tolerances are set explicitly (see _MINIMIZER_OPTIONS); the
 defaults under-resolve the loss valley and stop the search early.
 """
 
-import sys
-from pathlib import Path
 
 import numpy as np
 from astropy.constants import GM_earth
 from scipy.optimize import minimize
 
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_PROJECT_ROOT / "orbit"))
-sys.path.insert(0, str(_PROJECT_ROOT / "hypothesis"))
-sys.path.insert(0, str(_PROJECT_ROOT / "modelled"))
-sys.path.insert(0, str(_PROJECT_ROOT / "discriminator"))
-
-from range_bounds import (  # noqa: E402
+from lab.hypothesis.range_bounds import (
     VARIANTS,
     GENERATED_DATA_FILES,
     ATTRIBUTABLES_FILES,
@@ -52,14 +44,14 @@ from range_bounds import (  # noqa: E402
     A_MAX,
     population_for,
 )
-from k_bounds import k_grid  # noqa: E402
-from build_orbit import (  # noqa: E402
+from lab.hypothesis.k_bounds import k_grid
+from lab.model.build_orbit import (
     RANGE_BOUNDS_FILES,
     K_BOUNDS_FILES,
     _lookup_tracklet,
 )
-from lambert import LambertNoSolution  # noqa: E402
-from discriminator_loss import LOSS_FUNCTIONS, evaluate_loss  # noqa: E402
+from lab.model.lambert import LambertNoSolution
+from lab.scoring.discriminator_loss import LOSS_FUNCTIONS, evaluate_loss
 
 # km^3/s^2, matches the rest of the project.
 MU = GM_earth.value / 1_000_000_000.0
@@ -76,7 +68,7 @@ _INFEASIBLE_PENALTY = 1.0e12
 # gradient is probed across a step 12 orders of magnitude too small and
 # comes back as rounding noise. L-BFGS-B then "converges" two iterations
 # from the circular-orbit seed, thousands of times above the true minimum
-# (optimisation/validate_optimiser.py demonstrates this). A 1 km step
+# (src/lab/evaluation/validate_optimiser.py demonstrates this). A 1 km step
 # resolves the loss valley, which stays ~500 km wide even for the
 # ill-conditioned near-180-degree transfers. ftol/gtol are tightened to
 # match and maxiter is raised so the tighter tolerances have room to run.
@@ -187,14 +179,14 @@ def optimize_hypothesis(
         Which dataset chain is being scored, "clean" or "noisy". Selects
         the loss: the noisy chain uses the covariance-weighted Eq. (18),
         the clean chain the unweighted residual (see
-        discriminator/discriminator_loss.py).
+        src/lab/scoring/discriminator_loss.py).
     k : float
         Revolutions/path parameter (fixed for this search -- Eq. 30 is
         solved once per admissible k, not jointly over k).
     delta_t : float
         t2 - t1 (s), for the Eq. 31 initial guess.
     c_1, c_2 : float
-        r_s_i . u_i (hypothesis/range_bounds.py), for the Eq. 31 guess.
+        r_s_i . u_i (src/lab/hypothesis/range_bounds.py), for the Eq. 31 guess.
     r_s1, r_s2 : array-like, shape (3,)
         Site positions (km) at t1, t2.
     v_s1, v_s2 : array-like, shape (3,)
@@ -210,7 +202,7 @@ def optimize_hypothesis(
     history : list, optional
         If given, every objective evaluation L-BFGS-B makes is appended as
         (rho_1, rho_2, loss), in call order. The seed is the first entry.
-        Used by optimisation/validate_optimiser.py to check the search
+        Used by src/lab/evaluation/validate_optimiser.py to check the search
         actually descended rather than stalling on its first step.
 
     Returns
@@ -324,7 +316,7 @@ def run_association_test(variant):
         attributables = archive["attributable"]
         covariances = archive["Ca"]
 
-    from range_bounds import v_s_i_at_epoch  # noqa: E402
+    from lab.hypothesis.range_bounds import v_s_i_at_epoch
 
     results = []
     for idx in range(len(pair_object_id_1)):

@@ -17,14 +17,12 @@ The notation and calculations follow Equations (23), (24), and (26)-(28):
 Here, rho_i is the topocentric range from the observing site to the object.
 """
 
-from pathlib import Path
 
 import numpy as np
 
+from lab.paths import DATA_DIR
 
-THIS_DIR = Path(__file__).resolve().parent
-
-# simulation/new_data_gen.py generates two datasets from one orbit, one set of
+# src/lab/data/new_data_gen.py generates two datasets from one orbit, one set of
 # stations and one set of epochs: "clean" carries the exact angles, "noisy"
 # carries the same angles with Siminski measurement error applied. Every stage
 # from here down runs both as two independent chains, so a result can always be
@@ -35,27 +33,27 @@ THIS_DIR = Path(__file__).resolve().parent
 VARIANTS = ("clean", "noisy")
 
 GENERATED_DATA_FILES = {
-    variant: THIS_DIR.parent / "simulation" / f"generated_data_{variant}.npz"
+    variant: DATA_DIR / f"generated_data_{variant}.npz"
     for variant in VARIANTS
 }
 
 ATTRIBUTABLES_FILES = {
-    variant: THIS_DIR.parent / "observation" / f"generated_attributables_{variant}.npz"
+    variant: DATA_DIR / f"generated_attributables_{variant}.npz"
     for variant in VARIANTS
 }
 
 PRECISION_OUTPUT_FILES = {
-    variant: THIS_DIR / f"range_bounds_{variant}.npz"
+    variant: DATA_DIR / f"range_bounds_{variant}.npz"
     for variant in VARIANTS
 }
 
 READABLE_OUTPUT_FILES = {
-    variant: THIS_DIR / f"range_bounds_{variant}.txt"
+    variant: DATA_DIR / f"range_bounds_{variant}.txt"
     for variant in VARIANTS
 }
 
 # Fallback population limits, for datasets generated before
-# simulation/new_data_gen.py began recording its own. Everything below
+# src/lab/data/new_data_gen.py began recording its own. Everything below
 # goes through population_for() instead: E_MAX = 0.01 describes test case
 # 'a' alone, and applying it to an eccentric population silently puts the
 # true range outside the region the optimizer may search.
@@ -67,7 +65,7 @@ E_MAX = 0.01
 def population_for(variant):
     """The orbit population a dataset was actually generated from.
 
-    simulation/new_data_gen.py records the semi-major axis and eccentricity
+    src/lab/data/new_data_gen.py records the semi-major axis and eccentricity
     limits its test case sampled, so the admissible region (Eqs. 23-24)
     follows the data rather than being pinned to one case. Datasets written
     before those keys existed fall back to the module constants.
@@ -179,7 +177,7 @@ def v_s_i_at_epoch(
 ):
     """Obtain the observing-site velocity v_s_i at attributable epoch t0_i.
 
-    Sibling to r_s_i_at_epoch, used by modelled/model_rates.py to form
+    Sibling to r_s_i_at_epoch, used by src/lab/model/model_rates.py to form
     the topocentric relative velocity rho_dot = v_sat - v_s needed for
     Eq. (17)'s modeled angular rates. Not needed by this file's own range
     bounds (Eqs. 26-28), which only use site position.

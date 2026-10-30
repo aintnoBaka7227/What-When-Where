@@ -16,39 +16,38 @@ module computes both raw values and takes min()/max() to form the actual
 [k_min, k_max] range iterated over in Eq. (30), rather than trusting the
 paper's variable names literally.
 
-k is the same parameter consumed by orbit/lambert.py's
+k is the same parameter consumed by src/lab/model/lambert.py's
 lambert_boundary_value(): its integer part is the number of full
 revolutions M, and its fractional part (0 or 0.5) selects the short-way or
 long-way transfer.
 """
 
 from itertools import combinations
-from pathlib import Path
 
 import numpy as np
 from astropy.constants import GM_earth
 
-from range_bounds import A_MIN, A_MAX, VARIANTS, ATTRIBUTABLES_FILES, population_for
+from lab.paths import DATA_DIR
+from lab.hypothesis.range_bounds import A_MIN, A_MAX, VARIANTS, ATTRIBUTABLES_FILES, population_for
 
-THIS_DIR = Path(__file__).resolve().parent
 
-# One k-bounds file per dataset chain, matching hypothesis/range_bounds.py.
+# One k-bounds file per dataset chain, matching src/lab/hypothesis/range_bounds.py.
 # The k bounds depend only on the attributable epochs t0, which the clean and
 # noisy datasets share exactly, so the two files come out identical in
 # practice. They are still written separately: it keeps each chain
 # self-contained, and it stops being true the moment the two chains are
 # generated from different observation schedules.
 PRECISION_OUTPUT_FILES = {
-    variant: THIS_DIR / f"k_bounds_{variant}.npz"
+    variant: DATA_DIR / f"k_bounds_{variant}.npz"
     for variant in VARIANTS
 }
 
 READABLE_OUTPUT_FILES = {
-    variant: THIS_DIR / f"k_bounds_{variant}.txt"
+    variant: DATA_DIR / f"k_bounds_{variant}.txt"
     for variant in VARIANTS
 }
 
-# km^3/s^2, matches simulation/new_data_gen.py's unit convention.
+# km^3/s^2, matches src/lab/data/new_data_gen.py's unit convention.
 MU = GM_earth.value / 1_000_000_000.0
 
 

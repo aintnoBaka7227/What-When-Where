@@ -19,7 +19,7 @@ hapsira.iod.izzo.lambert, because this solver will be evaluated many times per
 tracklet pair inside the eventual boundary-value optimizer (Section 5.2), and
 the paper's whole point is that this optimization is cheap. hapsira.core.iod
 is numba-jitted and takes plain float/ndarray km, km/s inputs, matching the
-convention already used by simulation/new_data_gen.py's two_body(). This is an
+convention already used by src/lab/data/new_data_gen.py's two_body(). This is an
 internal (non-`__all__`) hapsira module, so hapsira is version-pinned in
 pyproject.toml (hapsira>=0.18.0) rather than tracked loosely.
 
@@ -218,9 +218,9 @@ def lambert_boundary_value(mu, r1, r2, tof, k, numiter=35, rtol=1e-8):
     return candidates
 
 
-# Validation lives in orbit/test_lambert.py, which exercises this module
+# Validation lives in test/test_lambert.py, which exercises this module
 # against Curtis's published example, round-trips through the project's own
 # two-body propagator, independent integration of Newton's law, and the
 # degenerate-geometry failure paths:
 #
-#     uv run python orbit/test_lambert.py
+#     uv run python test/test_lambert.py

@@ -23,27 +23,32 @@ For the full stage-by-stage description with every input and output, see
 
 ## Project structure
 
-The directory layout follows the data flow — each directory is one step in the
-chain, and the stage number is the order you run them in.
+Code lives in the `lab` package under `src/lab/`, with one directory per pipeline
+phase. Stage numbers are the order the stages run in. Generated files go in
+`data/`, and tests go in `test/`.
 
 | Directory | Stage | What lives there |
 |---|---|---|
-| `simulation/` | 1 | Synthetic observation generation. `new_data_gen.py` is the current generator; `data_generation.py` is the superseded original. |
-| `observation/` | 2 | Turning raw RA/Dec series into *attributables*. `fit_attributes.py` is the fit itself; `create_attributes_vector.py` drives it over the dataset. |
-| `hypothesis/` | 3–4 | The admissible search region. `range_bounds.py` bounds the topocentric range; `k_bounds.py` bounds the revolution count. |
-| `orbit/` | 5 | Turning a range hypothesis into an actual orbit. `lambert.py` is the boundary-value solver; `build_orbit.py` wires it to the bounds. |
-| `modelled/` | 6 | `model_rates.py` — what angular rates a candidate orbit *predicts*. |
-| `discriminator/` | 7 | `discriminator_loss.py` — how badly predicted rates disagree with measured ones. |
-| `optimisation/` | 8 | `optimise_hypothesis.py` — searching the region for the best-fitting orbit. The actual association test. |
+| `src/lab/data/` | 1 | Synthetic observation generation. `new_data_gen.py` is the current generator; `gcrs_data_generation.py` is not connected to the pipeline yet; `data_generation.py` is the superseded original. |
+| `src/lab/observation/` | 2 | Turning raw RA/Dec series into *attributables*. `fit_attributes.py` is the fit itself; `create_attributes_vector.py` drives it over the dataset. |
+| `src/lab/hypothesis/` | 3–4 | The admissible search region. `range_bounds.py` bounds the topocentric range; `k_bounds.py` bounds the revolution count. |
+| `src/lab/model/` | 5–6 | Candidate orbits and their predictions. `lambert.py` is the boundary-value solver; `build_orbit.py` wires it to the bounds; `model_rates.py` gives the angular rates an orbit *predicts*. |
+| `src/lab/scoring/` | 7 | `discriminator_loss.py` — how badly predicted rates disagree with measured ones. |
+| `src/lab/search/` | 8 | `optimise_hypothesis.py` — searching the region for the best-fitting orbit. The actual association test. |
+| `src/lab/evaluation/` | — | `validate_optimiser.py` and the figure scripts. |
+| `src/lab/paths.py` | — | `PROJECT_ROOT`, `DATA_DIR`, `FIGURES_DIR`, `RUNS_DIR`. |
+| `data/` | — | Every generated dataset and intermediate file. |
+| `figures/` | — | Generated figures (not tracked). |
+| `test/` | — | Test suites. |
 | `sources/` | — | The paper. |
 
 Two files are worth knowing about before you read any others:
 
-- **`hypothesis/range_bounds.py`** is the path authority for the whole project.
+- **`src/lab/hypothesis/range_bounds.py`** is the path authority for the whole project.
   It defines `VARIANTS` and the `*_FILES` dictionaries that stages 3–8 import
-  rather than building paths themselves. If you want to know where data lives,
-  start there.
-- **`orbit/lambert.py`** is self-contained and has no pipeline dependencies. It
+  rather than building paths themselves. If you want to know which files a stage
+  reads, start there.
+- **`src/lab/model/lambert.py`** is self-contained and has no pipeline dependencies. It
   is the one piece you can read and test in isolation.
 
 ## The two chains
@@ -70,17 +75,20 @@ Dependencies are managed with [`uv`](https://docs.astral.sh/uv/):
 uv sync
 ```
 
+This also installs the `lab` package in editable mode, which is how the stages
+import each other.
+
 Then run the stages in order:
 
 ```bash
-uv run python simulation/new_data_gen.py            # 1  appends ONE object
-uv run python observation/create_attributes_vector.py  # 2
-uv run python hypothesis/range_bounds.py            # 3
-uv run python hypothesis/k_bounds.py                # 4
-uv run python orbit/build_orbit.py             # 5
-uv run python modelled/model_rates.py               # 6
-uv run python discriminator/discriminator_loss.py   # 7
-uv run python optimisation/optimise_hypothesis.py   # 8  the association test
+uv run python src/lab/data/new_data_gen.py            # 1  appends ONE object
+uv run python src/lab/observation/create_attributes_vector.py  # 2
+uv run python src/lab/hypothesis/range_bounds.py            # 3
+uv run python src/lab/hypothesis/k_bounds.py                # 4
+uv run python src/lab/model/build_orbit.py             # 5
+uv run python src/lab/model/model_rates.py               # 6
+uv run python src/lab/scoring/discriminator_loss.py   # 7
+uv run python src/lab/search/optimise_hypothesis.py   # 8  the association test
 ```
 
 Every stage handles both chains itself — there is no flag to set.
@@ -92,13 +100,13 @@ objects gives 12 tracklets and 48 pairs, which is a reasonable working size.
 To reset to an empty dataset, delete the generated files and start over:
 
 ```bash
-rm -f simulation/generated_data_{clean,noisy}.{npz,txt}
+rm -f data/generated_data_{clean,noisy}.{npz,txt}
 ```
 
 Generation is fully deterministic — object *n* is seeded with `n`, so the same
 object count always reproduces the same dataset.
 
-`orbit/lambert.py` is a self-test rather than a pipeline stage; run it directly
+`src/lab/model/lambert.py` is a self-test rather than a pipeline stage; run it directly
 whenever you touch the solver.
 
 ## Conventions

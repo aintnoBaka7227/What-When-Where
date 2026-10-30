@@ -2,18 +2,18 @@
 
 Given a candidate boundary-value orbit -- the geocentric positions
 r_hat_1, r_hat_2 (Eq. 5) and the geocentric velocities r_hat_dot_1,
-r_hat_dot_2 returned by orbit/lambert.py's Lambert solve -- together
+r_hat_dot_2 returned by src/lab/model/lambert.py's Lambert solve -- together
 with the observing site's geocentric position and velocity at each
 epoch, this computes the modeled topocentric angular rates
 
     z_hat_dot = (alpha_hat_dot_1, delta_hat_dot_1,
                  alpha_hat_dot_2, delta_hat_dot_2)
 
-This is the quantity discriminator/discriminator_loss.py (Eq. 18) compares
+This is the quantity src/lab/scoring/discriminator_loss.py (Eq. 18) compares
 against the tracklets' measured angular rates z_dot -- the attributable's
 alpha_dot/delta_dot, already sitting in
-observation/generated_attributables_{clean,noisy}.npz. Lives in its own
-modelled/ directory, separate from discriminator/, so "compute the model's
+data/generated_attributables_{clean,noisy}.npz. Lives in its own
+model/ directory, separate from scoring/, so "compute the model's
 predicted rate" and "score it against the measurement" stay two distinct
 pieces, matching Fig. 5's separate "Modeled" and "Test" stages.
 
@@ -30,7 +30,7 @@ def angle_rate_from_state(rho_vec, rho_dot_vec):
 
     Given a topocentric (site-relative) position rho_vec and velocity
     rho_dot_vec, expressed in the same inertial frame used throughout this
-    project (e.g. simulation/new_data_gen.py's gcrs_to_radec, which gives
+    project (e.g. src/lab/data/new_data_gen.py's gcrs_to_radec, which gives
     the angles themselves but not their rates), returns the implied
     (alpha_dot, delta_dot).
 
@@ -75,10 +75,10 @@ def modeled_angular_rates(r1, v1, r_s1, v_s1, r2, v2, r_s2, v_s2):
     ----------
     r1, r2 : array-like, shape (3,)
         Hypothesized geocentric positions (km) at t1, t2 -- Eq. (5)'s
-        r_hat_1, r_hat_2 (e.g. from orbit/build_orbit.py).
+        r_hat_1, r_hat_2 (e.g. from src/lab/model/build_orbit.py).
     v1, v2 : array-like, shape (3,)
         Geocentric velocities (km/s) at t1, t2 -- the Lambert solve's
-        r_hat_dot_1, r_hat_dot_2 (orbit/lambert.py).
+        r_hat_dot_1, r_hat_dot_2 (src/lab/model/lambert.py).
     r_s1, r_s2 : array-like, shape (3,)
         Observing-site geocentric positions (km) at t1, t2.
     v_s1, v_s2 : array-like, shape (3,)

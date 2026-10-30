@@ -6,33 +6,34 @@ project structure, see [README.md](README.md).
 ## Data flow
 
 ```
-                 simulation/new_data_gen.py                    [1]
-                            |
-              generated_data_{clean,noisy}.npz
-                            |
-          observation/create_attributes_vector.py              [2]
-                            |
-          generated_attributables_{clean,noisy}.npz
-                    |                    |
-    hypothesis/range_bounds.py    hypothesis/k_bounds.py     [3] [4]
-                    |                    |
-      range_bounds_{...}.npz     k_bounds_{...}.npz
-                    \____________________/
-                            |
-                 orbit/build_orbit.py                     [5]
-                     (via orbit/lambert.py)
-                            |
-                  modelled/model_rates.py                      [6]
-                            |
-             discriminator/discriminator_loss.py               [7]
-                            |
-            optimisation/optimise_hypothesis.py                [8]
-                            |
-                   accept / reject per pair
+data/         new_data_gen.py                              [1]
+                     |
+       generated_data_{clean,noisy}.npz
+                     |
+observation/  create_attributes_vector.py                  [2]
+                     |
+       generated_attributables_{clean,noisy}.npz
+              |                        |
+hypothesis/   range_bounds.py          k_bounds.py         [3] [4]
+              |                        |
+       range_bounds_{...}.npz   k_bounds_{...}.npz
+              \________________________/
+                     |
+model/        build_orbit.py (via lambert.py)              [5]
+                     |
+model/        model_rates.py                               [6]
+                     |
+scoring/      discriminator_loss.py                        [7]
+                     |
+search/       optimise_hypothesis.py                       [8]
+                     |
+              accept / reject per pair (not built)
 ```
 
-Stages 1–4 write files. Stages 5–8 are libraries whose `__main__` blocks print
-demonstrations; they persist nothing.
+Code paths are relative to `src/lab/`. Every generated file is in `data/`.
+
+Stages 1–4 write files. Stages 5–8 persist nothing: stages 5 and 8 print results
+from their `__main__` blocks, and stages 6 and 7 are pure libraries.
 
 Every stage processes both the `clean` and `noisy` variants in one invocation
 and skips a variant whose inputs are missing.
@@ -61,16 +62,16 @@ method — they exist to score it.
 **The attributable** is `[alpha, alpha_dot, delta, delta_dot]` at a reference
 epoch `t0`, in that order, everywhere in the project.
 
-**Paths** are owned by `hypothesis/range_bounds.py`, which defines `VARIANTS`
+**Paths** are owned by `src/lab/hypothesis/range_bounds.py`, which defines `VARIANTS`
 and the `GENERATED_DATA_FILES` / `ATTRIBUTABLES_FILES` / `PRECISION_OUTPUT_FILES`
 / `READABLE_OUTPUT_FILES` dictionaries. Stages 4–8 import these rather than
-constructing paths. (`observation/create_attributes_vector.py` is the one
+constructing paths. (`src/lab/observation/create_attributes_vector.py` is the one
 exception — it holds its own copy, so that stage 2 does not have to import from
 stage 3.)
 
 ---
 
-## [1] `simulation/new_data_gen.py`
+## [1] `src/lab/data/new_data_gen.py`
 
 Generates one synthetic near-GEO object per run and appends it to both datasets.
 
@@ -81,8 +82,8 @@ neither — the mismatch is caught and raised, since the two must stay in step.
 
 | File | Contents |
 |---|---|
-| `simulation/generated_data_clean.npz` | exact angles |
-| `simulation/generated_data_noisy.npz` | angles + measurement error |
+| `data/generated_data_clean.npz` | exact angles |
+| `data/generated_data_noisy.npz` | angles + measurement error |
 | `..._clean.txt`, `..._noisy.txt` | readable copies (lossy, `%f`) |
 
 Each `.npz` holds:
@@ -113,14 +114,14 @@ construction — every object is above the horizon at every epoch. Test cases
 
 ---
 
-## [2] `observation/create_attributes_vector.py` + `fit_attributes.py`
+## [2] `src/lab/observation/create_attributes_vector.py` + `fit_attributes.py`
 
 Compresses each tracklet's RA/Dec series into a single attributable.
 
-**Input.** `simulation/generated_data_{variant}.npz` — columns 6, 7, 14, 15, 16,
+**Input.** `data/generated_data_{variant}.npz` — columns 6, 7, 14, 15, 16,
 plus the two uncertainty scalars.
 
-**Output.** `observation/generated_attributables_{variant}.npz` (+ `.txt`):
+**Output.** `data/generated_attributables_{variant}.npz` (+ `.txt`):
 
 | Key | Shape | Meaning |
 |---|---|---|
@@ -141,14 +142,14 @@ clean chain cannot use any loss that inverts `Ca`. See stage 7.
 
 ---
 
-## [3] `hypothesis/range_bounds.py`
+## [3] `src/lab/hypothesis/range_bounds.py`
 
 Bounds the topocentric range for each tracklet — half the admissible region.
 
 **Input.** `generated_attributables_{variant}.npz` (for `alpha`, `delta`, `t0`)
 and `generated_data_{variant}.npz` (for site position, interpolated to `t0`).
 
-**Output.** `hypothesis/range_bounds_{variant}.npz` (+ `.txt`):
+**Output.** `data/range_bounds_{variant}.npz` (+ `.txt`):
 
 | Key | Shape | Meaning |
 |---|---|---|
@@ -172,14 +173,14 @@ site position and velocity to `t0`. Stages 6–8 import them.
 
 ---
 
-## [4] `hypothesis/k_bounds.py`
+## [4] `src/lab/hypothesis/k_bounds.py`
 
 Bounds the revolution/path parameter `k` for each tracklet **pair** — the other
 half of the admissible region.
 
 **Input.** `generated_attributables_{variant}.npz` — only `t0` and the IDs.
 
-**Output.** `hypothesis/k_bounds_{variant}.npz` (+ `.txt`):
+**Output.** `data/k_bounds_{variant}.npz` (+ `.txt`):
 
 | Key | Shape | Meaning |
 |---|---|---|
@@ -205,7 +206,7 @@ each chain stays self-contained.
 
 ---
 
-## [5] `orbit/build_orbit.py` (+ `orbit/lambert.py`)
+## [5] `src/lab/model/build_orbit.py` (+ `src/lab/model/lambert.py`)
 
 Turns a range hypothesis into an actual orbit.
 
@@ -226,12 +227,12 @@ a flight time is a Lambert boundary-value problem.
 count and transfer direction. Multi-revolution cases can return **two**
 candidate orbits; everything downstream carries the list and scores each.
 
-`lambert.py` has no pipeline dependencies and self-tests against both Curtis's
+`lambert.py` has no pipeline dependencies. `test/test_lambert.py` checks it against both Curtis's
 worked example and a round-trip through this project's own `two_body`.
 
 ---
 
-## [6] `modelled/model_rates.py`
+## [6] `src/lab/model/model_rates.py`
 
 Predicts what angular rates a candidate orbit would produce.
 
@@ -248,12 +249,12 @@ delta_dot = (vz·s² − pz·(px·vx + py·vy)) / (r²·s)
 `modeled_angular_rates(...)` → `z_hat_dot` = `(alpha_dot_1, delta_dot_1,
 alpha_dot_2, delta_dot_2)`, Eq. (17).
 
-**Self-check.** Its `__main__` validates the analytic derivative against finite
+**Self-check.** `test/test_discriminator_loss.py` validates the analytic derivative against finite
 differences before running the demo.
 
 ---
 
-## [7] `discriminator/discriminator_loss.py`
+## [7] `src/lab/scoring/discriminator_loss.py`
 
 Scores how badly a hypothesis's predicted rates disagree with the measured ones.
 **This is where the two chains diverge.**
@@ -297,7 +298,7 @@ happens to match the printed form is a coincidence, not the reason for it.
 
 ---
 
-## [8] `optimisation/optimise_hypothesis.py`
+## [8] `src/lab/search/optimise_hypothesis.py`
 
 Searches the admissible region for the best-fitting orbit. **The actual
 association test.**
@@ -350,13 +351,13 @@ threshold classifies all 48 correctly in each chain.
   scenario, not just more random objects.
 - **Other noise cases.** The paper tests 0.7″, 1.2″ and 2.0″ relative error.
   Only 0.7″ is wired up. Adding the others means extending `VARIANTS` in
-  `hypothesis/range_bounds.py` *and* `DATASETS` in
-  `observation/create_attributes_vector.py`.
+  `src/lab/hypothesis/range_bounds.py` *and* `DATASETS` in
+  `src/lab/observation/create_attributes_vector.py`.
 
 ## Gotchas
 
 - **Stage 1 appends.** Every run adds one object. Delete
-  `simulation/generated_data_{clean,noisy}.{npz,txt}` to reset.
+  `data/generated_data_{clean,noisy}.{npz,txt}` to reset.
 - **One object means no test.** A single object gives only same-object pairs, so
   stage 8 reports `False pairs: none` and proves nothing.
 - **The `.txt` files are lossy.** RA/Dec are written with `%f` — six decimals is

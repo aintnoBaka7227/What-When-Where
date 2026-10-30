@@ -6,32 +6,27 @@ range along a tracklet's fixed line-of-sight direction:
     r(rho) = r_s + rho * u
 
 Given two tracklets' site positions, line-of-sight directions, and epochs
-(from hypothesis/range_bounds.py), a range hypothesis p = (rho_1, rho_2),
-and a candidate revolutions/path parameter k (from hypothesis/k_bounds.py),
+(from src/lab/hypothesis/range_bounds.py), a range hypothesis p = (rho_1, rho_2),
+and a candidate revolutions/path parameter k (from src/lab/hypothesis/k_bounds.py),
 this module builds r_hat_1, r_hat_2 (Eq. 5's r_hat(rho) at t1 and t2) and
 delta_t = t2 - t1 (Eq. 29's notation), then hands them to this directory's
-lambert.py -- Section 5's "Orbit" step (Fig. 5). Lives in orbit/ because,
+lambert.py -- Section 5's "Orbit" step (Fig. 5). Lives in model/ because,
 like the paper, generating r_hat and r_hat_dot is considered part of orbit
 determination; the admissible-region bounds that (rho_1, rho_2, k)
 hypotheses are drawn *from* live in hypothesis/ instead.
 """
 
-import sys
-from pathlib import Path
 
 import numpy as np
 from astropy.constants import GM_earth
 
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_PROJECT_ROOT / "hypothesis"))
+from lab.model.lambert import lambert_boundary_value, LambertNoSolution, LambertSolution
+from lab.hypothesis.k_bounds import k_grid
+from lab.hypothesis.k_bounds import PRECISION_OUTPUT_FILES as K_BOUNDS_FILES
+from lab.hypothesis.range_bounds import VARIANTS
+from lab.hypothesis.range_bounds import PRECISION_OUTPUT_FILES as RANGE_BOUNDS_FILES
 
-from lambert import lambert_boundary_value, LambertNoSolution, LambertSolution  # noqa: E402
-from k_bounds import k_grid  # noqa: E402
-from k_bounds import PRECISION_OUTPUT_FILES as K_BOUNDS_FILES  # noqa: E402
-from range_bounds import VARIANTS  # noqa: E402
-from range_bounds import PRECISION_OUTPUT_FILES as RANGE_BOUNDS_FILES  # noqa: E402
-
-# km^3/s^2, matches simulation/new_data_gen.py, hypothesis/k_bounds.py.
+# km^3/s^2, matches src/lab/data/new_data_gen.py, src/lab/hypothesis/k_bounds.py.
 MU = GM_earth.value / 1_000_000_000.0
 
 
@@ -52,7 +47,7 @@ def build_orbit(r_s_1, u_1, t1, rho_1, r_s_2, u_2, t2, rho_2, k, mu=MU):
         Observing-site geocentric positions (km) at each tracklet's
         attributable epoch.
     u_1, u_2 : array-like, shape (3,)
-        Line-of-sight unit vectors (hypothesis/range_bounds.py's
+        Line-of-sight unit vectors (src/lab/hypothesis/range_bounds.py's
         calculate_u_i) at each tracklet's attributable epoch.
     t1, t2 : float
         Observation epochs (s), matching Eq. (14)'s z = (alpha_1, delta_1,
@@ -62,7 +57,7 @@ def build_orbit(r_s_1, u_1, t1, rho_1, r_s_2, u_2, t2, rho_2, k, mu=MU):
         hypothesis variable p = (rho_1, rho_2).
     k : float
         Revolutions/path parameter from the admissible k grid
-        (hypothesis/k_bounds.py).
+        (src/lab/hypothesis/k_bounds.py).
 
     Returns
     -------

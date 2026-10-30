@@ -1,6 +1,7 @@
-from pathlib import Path
 
 import numpy as np
+
+from lab.paths import DATA_DIR
 from numba import jit
 from scipy.spatial.transform import Rotation as R
 from astropy.constants import GM_earth, R_earth
@@ -30,7 +31,7 @@ R_EARTH_KM = R_earth.value / 1000
 
 # Orbit population each test case samples from.
 #
-# hypothesis/range_bounds.py must bound the same population, or the true
+# src/lab/hypothesis/range_bounds.py must bound the same population, or the true
 # range falls outside the region the optimizer is allowed to search and
 # every association silently fails. These limits are therefore written into
 # the generated .npz so the bounds can be derived from the data rather than
@@ -651,13 +652,12 @@ def place_station_below(satellite_position, epoch, rng, max_offset_angle=np.pi /
 if __name__ == "__main__":
     # Keep all four orbit choices; use near-GEO option A for now.
     test_case = 'a'
-    this_dir = Path(__file__).resolve().parent
 
-    clean_output_file = this_dir / 'generated_data_clean.txt'
-    clean_npz_file = this_dir / "generated_data_clean.npz"
+    clean_output_file = DATA_DIR / 'generated_data_clean.txt'
+    clean_npz_file = DATA_DIR / "generated_data_clean.npz"
 
-    noisy_output_file = this_dir / 'generated_data_noisy.txt'
-    noisy_npz_file = this_dir / "generated_data_noisy.npz"
+    noisy_output_file = DATA_DIR / 'generated_data_noisy.txt'
+    noisy_npz_file = DATA_DIR / "generated_data_noisy.npz"
 
     # Each run appends one new object rather than overwriting the files.
     # The clean and noisy datasets must be generated together so they
@@ -745,7 +745,7 @@ if __name__ == "__main__":
     # requiring one exact gap. Near-GEO periods are ~20.5-26.4 h, so this
     # gap sets how many revolutions k separate consecutive tracklets:
     # 12 h -> k in {0, 0.5}, 24 h -> {0.5, 1.0}, 36 h -> {1.0, 1.5},
-    # 48 h -> {1.5, 2.0}. hypothesis/k_bounds.py derives the actual grid
+    # 48 h -> {1.5, 2.0}. src/lab/hypothesis/k_bounds.py derives the actual grid
     # from the resulting epochs, so only this line changes.
     gap_between_tracklets = 36.0 * 60.0 * 60.0
 

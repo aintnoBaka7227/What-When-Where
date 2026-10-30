@@ -1,4 +1,4 @@
-"""Validation suite for the station velocity in simulation/gcrs_data_generation.py.
+"""Validation suite for the station velocity in src/lab/data/gcrs_data_generation.py.
 
 Run directly:
 
@@ -33,19 +33,14 @@ the antimeridian, an elevated station, the geocentre, a time step across the
 2012-06-30 leap second, and a full sidereal day of rotation.
 """
 
-import sys
-from pathlib import Path
 
 import numpy as np
 import astropy.units as u
 from astropy.coordinates import EarthLocation
 from astropy.time import Time
 
-_THIS_DIR = Path(__file__).resolve().parent
-_PROJECT_ROOT = _THIS_DIR.parent
-sys.path.insert(0, str(_PROJECT_ROOT / "simulation"))
-
-from gcrs_data_generation import (  # noqa: E402
+from lab.paths import DATA_DIR, PROJECT_ROOT
+from lab.data.gcrs_data_generation import (
     fix_station_to_earth,
     station_gcrs_state,
     two_body,
@@ -88,7 +83,7 @@ FD_REL_TOL = 1.0e-6
 # 0.5 deg. A reversed or rotated velocity is off by tens of degrees or 180.
 DIRECTION_TOL_DEG = 0.5
 
-DATA_FILE = _PROJECT_ROOT / "data" / "generated_data_gcrs_clean.txt"
+DATA_FILE = DATA_DIR / "generated_data_gcrs_clean.txt"
 
 
 class Skip(Exception):
@@ -397,7 +392,7 @@ def test_full_sidereal_day_returns_station_to_start():
 
 def test_generated_data_station_velocity():
     if not DATA_FILE.exists():
-        raise Skip(f"{DATA_FILE.relative_to(_PROJECT_ROOT)} not found; run the generator first")
+        raise Skip(f"{DATA_FILE.relative_to(PROJECT_ROOT)} not found; run the generator first")
 
     data = np.loadtxt(DATA_FILE, delimiter=",", ndmin=2)
     assert data.shape[1] == NUM_OF_OUTPUT_COLUMNS, (
@@ -473,7 +468,7 @@ def main():
         except AssertionError as exc:
             failed.append(name)
             print(f"  FAIL  {name}\n          {exc}")
-        except Exception as exc:  # noqa: BLE001 -- report and continue
+        except Exception as exc:
             failed.append(name)
             print(f"  ERROR {name}\n          {type(exc).__name__}: {exc}")
         else:

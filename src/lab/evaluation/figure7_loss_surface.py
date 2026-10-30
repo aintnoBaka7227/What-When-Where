@@ -6,12 +6,12 @@ k in the pair's admissible grid. The paper's point: unlike the
 initial-value method, each fixed-k slice has a single minimum, and the
 overall solution is the k whose minimum is lowest.
 
-    uv run python figures/figure7_loss_surface.py                 # noisy, default pair
-    uv run python figures/figure7_loss_surface.py --pair 0.0-0.2 --n 60
-    uv run python figures/figure7_loss_surface.py --variant clean
-    uv run python figures/figure7_loss_surface.py --unweighted    # noisy, ~9x faster
-    uv run python figures/figure7_loss_surface.py --all           # every pair
-    uv run python figures/figure7_loss_surface.py --all --pairs true
+    uv run python src/lab/evaluation/figure7_loss_surface.py                 # noisy, default pair
+    uv run python src/lab/evaluation/figure7_loss_surface.py --pair 0.0-0.2 --n 60
+    uv run python src/lab/evaluation/figure7_loss_surface.py --variant clean
+    uv run python src/lab/evaluation/figure7_loss_surface.py --unweighted    # noisy, ~9x faster
+    uv run python src/lab/evaluation/figure7_loss_surface.py --all           # every pair
+    uv run python src/lab/evaluation/figure7_loss_surface.py --all --pairs true
 
 --pair is "obj.trk-obj.trk" (default 1.0-1.2: object 1's 72 h pair, k in
 {2.5, 3.0, 3.5} -- the closest analogue to the paper's k in [3, 4.5]
@@ -28,35 +28,25 @@ Single pair  -> figures/figure7_loss_surface_<variant>_<pair>.png
 """
 
 import argparse
-import sys
 import time
-from pathlib import Path
 
 import numpy as np
 
 import matplotlib
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
-
-# The pipeline stages resolve their imports from sibling directories, not a
-# package, so this script that pulls from four of them has to put those on
-# the path itself -- same pattern as optimisation/validate_optimiser.py.
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-for _sub in ("optimisation", "orbit", "hypothesis", "modelled", "discriminator"):
-    sys.path.insert(0, str(_PROJECT_ROOT / _sub))
+import matplotlib.pyplot as plt
 
 # _pair_inputs yields the full per-pair optimiser bundle (site pos/vel,
 # attributables, covariances, bounds, k grid) exactly as stage 8 sees it,
 # so this figure scores the same L the pipeline scores.
-from validate_optimiser import _pair_inputs  # noqa: E402
-from optimise_hypothesis import (  # noqa: E402
+from lab.evaluation.validate_optimiser import _pair_inputs
+from lab.search.optimise_hypothesis import (
     optimize_hypothesis,
     circular_orbit_initial_guess,
 )
-from discriminator_loss import discriminator_loss, discriminator_loss_unweighted  # noqa: E402
-from lambert import LambertNoSolution  # noqa: E402
-
-_FIG_DIR = Path(__file__).resolve().parent
+from lab.scoring.discriminator_loss import discriminator_loss, discriminator_loss_unweighted
+from lab.model.lambert import LambertNoSolution
+from lab.paths import FIGURES_DIR, PROJECT_ROOT
 
 
 def _pair_tag(pair):
@@ -208,7 +198,7 @@ def main():
 
     n = args.n if args.n is not None else (40 if args.all else 55)
 
-    from range_bounds import GENERATED_DATA_FILES  # noqa: E402
+    from lab.hypothesis.range_bounds import GENERATED_DATA_FILES
     with np.load(GENERATED_DATA_FILES[args.variant]) as archive:
         data = archive["data"]
 
@@ -223,11 +213,12 @@ def main():
         )
         if pair is None:
             raise SystemExit(f"pair {args.pair} not in the {args.variant} k-bounds file")
-        out = _FIG_DIR / f"figure7_loss_surface_{args.variant}_{args.pair}.png"
+        FIGURES_DIR.mkdir(exist_ok=True)
+        out = FIGURES_DIR / f"figure7_loss_surface_{args.variant}_{args.pair}.png"
         print(f"pair {args.pair} ({args.variant}); k grid {pair['k_grid']}; "
               f"{n}x{n} grid...")
         _, note = plot_pair(pair, data, args.variant, n, args.unweighted, out)
-        print(f"  {note}\nwrote {out.relative_to(_PROJECT_ROOT)}")
+        print(f"  {note}\nwrote {out.relative_to(PROJECT_ROOT)}")
         return
 
     pairs = [
@@ -235,11 +226,11 @@ def main():
         if args.pairs == "all"
         or (args.pairs == "true") == bool(p["is_true"])
     ]
-    out_dir = _FIG_DIR / f"figure7_all_{args.variant}"
-    out_dir.mkdir(exist_ok=True)
+    out_dir = FIGURES_DIR / f"figure7_all_{args.variant}"
+    out_dir.mkdir(parents=True, exist_ok=True)
     loss_name = "unweighted" if (args.unweighted or args.variant == "clean") else "weighted"
     print(f"{len(pairs)} {args.pairs} pairs, {n}x{n} grid, {loss_name} loss "
-          f"-> {out_dir.relative_to(_PROJECT_ROOT)}/")
+          f"-> {out_dir.relative_to(PROJECT_ROOT)}/")
 
     started = time.monotonic()
     for i, pair in enumerate(pairs, 1):

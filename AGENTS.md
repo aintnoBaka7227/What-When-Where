@@ -20,12 +20,12 @@ deliberate and documented (see "Eq. 18" below).
 ## Orientation, fastest path
 
 1. `README.md` — directory-to-stage map.
-2. `hypothesis/range_bounds.py` top of file — the path registry every other
+2. `src/lab/hypothesis/range_bounds.py` top of file — the path registry every other
    stage imports. Tells you where all data lives.
 3. `PIPELINE.md` — the stage you actually care about.
 
-`orbit/lambert.py` is the only module with no pipeline dependencies, and it
-self-tests. It is the safest place to start reading.
+`src/lab/model/lambert.py` is the only module with no pipeline dependencies, and
+`test/test_lambert.py` validates it. It is the safest place to start reading.
 
 ## The two-chain design
 
@@ -94,15 +94,16 @@ These were checked by running the code, not by reading it:
 
 ## Working practices
 
-Run stages with `uv run python <path>`; they resolve their own paths from
-`__file__`, so the working directory doesn't matter.
+Run stages with `uv run python <path>`; `src/lab/paths.py` resolves locations
+from `__file__`, so the working directory doesn't matter. Stages import each
+other as `lab.<phase>.<module>`, which needs the editable install from `uv sync`.
 
 **Stage 1 appends one object per run.** A single object gives only same-object
 pairs, so stage 8 reports `False pairs: none` and tests nothing. Generate at
 least 3–4 objects before drawing conclusions. Reset with:
 
 ```bash
-rm -f simulation/generated_data_{clean,noisy}.{npz,txt}
+rm -f data/generated_data_{clean,noisy}.{npz,txt}
 ```
 
 Stage 8 cost grows quadratically with tracklet count — four objects is ~90 s, so
@@ -127,7 +128,7 @@ test case `'a'` matches the current bounds; `'b'`–`'d'` push eccentricity past
 - **RA uncertainty is not divided by cos(δ)** in either the generator or the
   fitter. They are self-consistent, so nothing is wrong, but it diverges from
   standard astrometric convention if comparing to the paper's numbers directly.
-- **`simulation/data_generation.py` is dead.** The superseded original
+- **`src/lab/data/data_generation.py` is dead.** The superseded original
   generator, kept for reference. Not a pipeline stage.
 - **One true pair sometimes converges on the wrong `k`.** The 24 h-separated
   pair has landed on `k=0.5` with a loss orders of magnitude worse than its
