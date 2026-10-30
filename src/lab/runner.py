@@ -4,6 +4,7 @@ Each run of a stage gets one folder, named by the hash of its config:
 
     results/runs/<hash>/config.json   what was run, and its status
     results/runs/<hash>/run.log       the terminal output, verbatim
+    results/runs/<hash>/metrics.json  how the stage scored, if it has metrics
     results/runs/<hash>/output/       the stage's files, plus links to its inputs
 
 The hash covers the stage, its parameters, its parent run and the code, so the
@@ -94,6 +95,16 @@ def git_commit():
 def write_config(run_dir, config):
     with (run_dir / "config.json").open("w") as handle:
         json.dump(config, handle, indent=2)
+        handle.write("\n")
+
+
+def write_metrics(output_dir, metrics):
+    """Save a stage's metrics in its run folder.
+
+    Not in output/, whose files are linked into every child run.
+    """
+    with (output_dir.parent / "metrics.json").open("w") as handle:
+        json.dump(metrics, handle, indent=2)
         handle.write("\n")
 
 

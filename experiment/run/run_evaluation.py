@@ -8,11 +8,13 @@ optimiser_history_<variant>.csv.
 """
 
 import run_search
-from lab.runner import Tee, execute, run_script, stage_parser
+from lab.evaluation.metrics import decision_metrics
+from lab.runner import Tee, execute, run_script, stage_parser, write_metrics
 
 
 def run(parent, force=False):
     def body(tee, output_dir, config):
+        write_metrics(output_dir, decision_metrics(output_dir))
         return run_script(
             Tee(tee.log_file, quiet=True),
             "src/lab/evaluation/validate_optimiser.py", output_dir,

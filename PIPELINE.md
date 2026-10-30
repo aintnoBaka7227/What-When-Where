@@ -302,6 +302,9 @@ association test.**
 | `k`, `rho_1_km`, `rho_2_km` | the best hypothesis |
 | `loss` | its loss, `L*` |
 
+It also writes `search_trace_{variant}.npz`, one row per `(pair, k)` search, with
+the seed loss, final loss, iterations and loss evaluations.
+
 **Key functions.**
 
 - `circular_orbit_initial_guess(k, delta_t, c_1, r_s1, c_2, r_s2)` — Eq. (31),
@@ -339,6 +342,26 @@ The 15 failures are a Search problem. All 100 true pairs score at most 2.5e−10
 their true ranges and `k` on the clean chain. In 5 failures, the only `k` tried
 returns the 1e+12 penalty; in the other 10, Search chooses the wrong `k`. Only 1 of
 the 15 is within 5° of 0°/180°, so degeneracy is not the main cause.
+
+## Metrics
+
+`src/lab/evaluation/metrics.py` judges each stage against the simulated truth.
+`experiment/run/` saves the results as `metrics.json` in each run's folder.
+
+| Stage | Metric | Target |
+|---|---|---|
+| Hypothesis | True range inside the bounds | 100% |
+| Hypothesis | True `k` inside the grid | 100% |
+| Scoring | Loss at the true ranges and `k` | Clean near 0; noisy mean near 4 |
+| Search | Correct `k` on true pairs | 100% |
+| Search | Searches that start on the penalty | 0 |
+| Search | Iterations and loss evaluations | Paper: 2–3 steps, capped at 10; about 20 evaluations |
+| Evaluation | FN and FP at the best threshold and at T = 1–20 | Low on both; noisy chains only for T = 1–20 |
+| Evaluation | Separation gap: best false ÷ worst true | Above 1 |
+
+Read correct `k` together with `L*`: a pair whose only `k` hits the penalty counts
+as correct but is still missed. The best threshold is chosen on the pairs it is
+scored on, so its rates are optimistic.
 
 ## What's not built yet
 

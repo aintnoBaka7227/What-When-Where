@@ -110,6 +110,10 @@ or `experiment/run/` gives new hashes. New figures go in
 `experiment/prod/prod_<stage>.py` and must read a run's saved output rather than
 recompute it.
 
+**Check `metrics.json` first.** `experiment/run/show_metrics.py <hash>` prints a
+run's metrics and its ancestors'. Scoring is a sibling of Search, so show it
+separately. Loss at the truth tells a data problem from a Search problem.
+
 **Stage 1 appends one object per invocation.** `run_data.py -n N` handles
 this. A single object gives only same-object pairs, so stage 8 reports
 `False pairs: none` and tests nothing. Generate at least 3–4 objects before

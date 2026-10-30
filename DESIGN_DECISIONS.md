@@ -49,6 +49,15 @@ responsibility; stage numbers [1]–[8] are the execution order used in
 | Figures go in `results/figures/<hash>/` | The same hash links a figure to its run. |
 | Output from before this scheme is in `results/{runs,figures}/legacy/` | It has no config, so it cannot be given a hash. |
 
+### Metrics
+
+| Decision | Reason |
+| --- | --- |
+| Each stage is judged on whether it preserved the truth | Simulation gives the true answer at every stage, so a problem can be traced to the stage that caused it. |
+| Metrics live in `src/lab/evaluation/metrics.py`, and are saved as `metrics.json` in the run folder | Not in `output/`, whose files are linked into child runs. |
+| Stage 8 saves a per-`k` trace | Its final answer alone cannot show whether a search actually ran. |
+| Only metrics read the truth columns | The method itself stays blind to them. |
+
 ### Boundaries
 
 - **Data** is the only phase that may use the true orbit. Columns 0–5 of the data

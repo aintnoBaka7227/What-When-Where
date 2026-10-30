@@ -12,7 +12,7 @@ import numpy as np
 import lab.paths
 import run_hypothesis
 from lab.data.dataset import VARIANTS, load_data
-from lab.runner import execute, stage_parser
+from lab.runner import execute, stage_parser, write_metrics
 
 
 def _pair_tag(pair):
@@ -139,7 +139,9 @@ def run(parent, variant="noisy_0.7as", n=55, unweighted=False, pair=None, pairs=
         # The stage modules read their file locations from lab.paths when first
         # imported, so point it at this run before importing them.
         lab.paths.DATA_DIR = output_dir
+        from lab.evaluation.metrics import scoring_metrics
         from lab.evaluation.validate_optimiser import _pair_inputs
+        from lab.scoring.discriminator_loss import evaluate_loss
 
         data = load_data(variant)
 
@@ -163,6 +165,8 @@ def run(parent, variant="noisy_0.7as", n=55, unweighted=False, pair=None, pairs=
                     if finite.size else "no feasible point")
             kind = "TRUE " if current["is_true"] else "false"
             tee.write(f"  [{index:2d}/{len(selected)}] {kind} {surface['tag']:12s}  {note}\n")
+
+        write_metrics(output_dir, scoring_metrics(output_dir, _pair_inputs, evaluate_loss))
         return True
 
     return execute("scoring", params, (parent, "hypothesis"), body, force)

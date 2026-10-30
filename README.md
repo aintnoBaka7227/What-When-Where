@@ -35,7 +35,7 @@ phase. Stage numbers are the order the stages run in. Generated files go in
 | `src/lab/model/` | 5–6 | Candidate orbits and their predictions. `lambert.py` is the boundary-value solver; `build_orbit.py` wires it to the bounds; `model_rates.py` gives the angular rates an orbit *predicts*. |
 | `src/lab/scoring/` | 7 | `discriminator_loss.py` — how badly predicted rates disagree with measured ones. |
 | `src/lab/search/` | 8 | `optimise_hypothesis.py` — searching the region for the best-fitting orbit. The actual association test. |
-| `src/lab/evaluation/` | — | `validate_optimiser.py`, the optimiser diagnostic. |
+| `src/lab/evaluation/` | — | `metrics.py`, how each stage is judged, and `validate_optimiser.py`, the optimiser diagnostic. |
 | `src/lab/runner.py` | — | Run folders: hashing, config, logs, parent links. |
 | `src/lab/paths.py` | — | `PROJECT_ROOT`, `DATA_DIR`, `RESULTS_DIR`, `RUNS_DIR`, `FIGURES_DIR`. |
 | `experiment/run/` | — | `run_<stage>.py`: runs one stage and saves its result. |
@@ -112,10 +112,14 @@ Every run prints a 12-character hash and has its own folder:
 results/runs/<hash>/
 ├── config.json     stage, parent, parameters, code hash, status, result summary
 ├── run.log         the terminal output
+├── metrics.json    how the stage scored, for stages with metrics
 └── output/         this stage's files, plus links to its inputs
 ```
 
-`config.json` lists the files the stage itself produced under `outputs`. The hash
+`config.json` lists the files the stage itself produced under `outputs`.
+`uv run python experiment/run/show_metrics.py <hash>` prints a run's metrics and
+those of every run upstream of it. Scoring branches off Hypothesis, so show a
+scoring run separately. The hash
 covers the stage, its parameters, its parent and the code in `src/lab/` and
 `experiment/run/`. A completed config is reused rather than repeated, unless you
 pass `--force`, because generation is seeded and the optimiser is deterministic.

@@ -10,7 +10,8 @@ import numpy as np
 
 import run_hypothesis
 from lab.data.dataset import VARIANTS
-from lab.runner import execute, run_script, stage_parser
+from lab.evaluation.metrics import search_metrics
+from lab.runner import execute, run_script, stage_parser, write_metrics
 
 
 def association_summary(output_dir, variant):
@@ -36,6 +37,7 @@ def run(parent, force=False):
             variant: association_summary(output_dir, variant)
             for variant in VARIANTS
         }
+        write_metrics(output_dir, search_metrics(output_dir))
         return True
 
     return execute("search", {}, (parent, "hypothesis"), body, force)

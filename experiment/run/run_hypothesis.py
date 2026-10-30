@@ -5,15 +5,19 @@
 """
 
 import run_observation
-from lab.runner import execute, run_script, stage_parser
+from lab.evaluation.metrics import hypothesis_metrics
+from lab.runner import execute, run_script, stage_parser, write_metrics
 
 
 def run(parent, force=False):
     def body(tee, output_dir, config):
-        return (
+        if not (
             run_script(tee, "src/lab/hypothesis/range_bounds.py", output_dir)
             and run_script(tee, "src/lab/hypothesis/k_bounds.py", output_dir)
-        )
+        ):
+            return False
+        write_metrics(output_dir, hypothesis_metrics(output_dir))
+        return True
 
     return execute("hypothesis", {}, (parent, "observation"), body, force)
 

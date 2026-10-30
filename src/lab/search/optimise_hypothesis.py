@@ -244,13 +244,16 @@ def best_k_hypothesis(
     variant, k_min, k_max, delta_t,
     c_1, r_s1, v_s1, t1, rho_1_bounds, attributable_1, ca_1,
     c_2, r_s2, v_s2, t2, rho_2_bounds, attributable_2, ca_2,
-    mu=MU, eps=1e-6, a_min=A_MIN, a_max=A_MAX,
+    mu=MU, eps=1e-6, a_min=A_MIN, a_max=A_MAX, trace=None,
 ):
     """Equation (30) over the full k grid: the paper's actual association test.
 
     Runs optimize_hypothesis for every k in {k_min, k_min+0.5, ..., k_max}
     and returns the one with the smallest min-loss -- the overall best-fit
     orbit hypothesis for this tracklet pair, independent of k.
+
+    If trace is given, each search appends (k, seed loss, final loss,
+    iterations, loss evaluations) to it, to show whether the search worked.
 
     Returns
     -------
@@ -260,12 +263,15 @@ def best_k_hypothesis(
     """
     best = None
     for k in k_grid(k_min, k_max):
-        rho_1_opt, rho_2_opt, loss_opt, _ = optimize_hypothesis(
+        history = []
+        rho_1_opt, rho_2_opt, loss_opt, result = optimize_hypothesis(
             variant, k, delta_t,
             c_1, r_s1, v_s1, t1, rho_1_bounds, attributable_1, ca_1,
             c_2, r_s2, v_s2, t2, rho_2_bounds, attributable_2, ca_2,
-            mu=mu, eps=eps, a_min=a_min, a_max=a_max,
+            mu=mu, eps=eps, a_min=a_min, a_max=a_max, history=history,
         )
+        if trace is not None:
+            trace.append((k, history[0][2], loss_opt, result.nit, len(history)))
         if best is None or loss_opt < best[3]:
             best = (k, rho_1_opt, rho_2_opt, loss_opt)
 
@@ -318,6 +324,7 @@ def run_association_test(variant):
     from lab.hypothesis.range_bounds import v_s_i_at_epoch
 
     results = []
+    searches = []
     for idx in range(len(pair_object_id_1)):
         i = _lookup_tracklet(rb_object_ids, rb_tracklet_ids, pair_object_id_1[idx], pair_tracklet_id_1[idx])
         j = _lookup_tracklet(rb_object_ids, rb_tracklet_ids, pair_object_id_2[idx], pair_tracklet_id_2[idx])
@@ -328,14 +335,16 @@ def run_association_test(variant):
         v_s_1 = v_s_i_at_epoch(data, rb_object_ids[i], rb_tracklet_ids[i], t0_values[i])
         v_s_2 = v_s_i_at_epoch(data, rb_object_ids[j], rb_tracklet_ids[j], t0_values[j])
 
+        trace = []
         k_opt, rho_1_opt, rho_2_opt, loss_opt = best_k_hypothesis(
             variant, pair_k_min[idx], pair_k_max[idx], delta_t,
             c_i[i], r_s_i[i], v_s_1, t0_values[i], (rho_min_i[i], rho_max_i[i]), attributables[ai], covariances[ai],
             c_i[j], r_s_i[j], v_s_2, t0_values[j], (rho_min_i[j], rho_max_i[j]), attributables[aj], covariances[aj],
-            a_min=a_min, a_max=a_max,
+            a_min=a_min, a_max=a_max, trace=trace,
         )
 
         is_true_pair = int(rb_object_ids[i]) == int(rb_object_ids[j])
+        searches.extend((idx, is_true_pair, *search) for search in trace)
         results.append((
             int(rb_object_ids[i]), int(rb_tracklet_ids[i]),
             int(rb_object_ids[j]), int(rb_tracklet_ids[j]),
@@ -357,6 +366,15 @@ def run_association_test(variant):
         object_id_1=object_1, tracklet_id_1=tracklet_1,
         object_id_2=object_2, tracklet_id_2=tracklet_2,
         is_true=is_true, k=k, rho_1_km=rho_1, rho_2_km=rho_2, loss=loss,
+    )
+
+    pair, search_is_true, search_k, seed_loss, final_loss, iterations, evaluations = (
+        np.array(column) for column in zip(*searches)
+    )
+    np.savez(
+        ASSOCIATION_FILES[variant].with_name(f"search_trace_{variant}.npz"),
+        pair=pair, is_true=search_is_true, k=search_k, seed_loss=seed_loss,
+        final_loss=final_loss, iterations=iterations, evaluations=evaluations,
     )
 
     true_losses = loss[is_true].tolist()
