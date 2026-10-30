@@ -30,7 +30,7 @@ def angle_rate_from_state(rho_vec, rho_dot_vec):
 
     Given a topocentric (site-relative) position rho_vec and velocity
     rho_dot_vec, expressed in the same inertial frame used throughout this
-    project (e.g. src/lab/data/new_data_gen.py's gcrs_to_radec, which gives
+    project (e.g. src/lab/data/gcrs_data_generation.py's gcrs_to_radec, which gives
     the angles themselves but not their rates), returns the implied
     (alpha_dot, delta_dot).
 

@@ -47,7 +47,7 @@ from lab.model.lambert import (
     LambertNoSolution,
     k_to_revolutions,
 )
-from lab.data.new_data_gen import two_body, mu as MU
+from lab.data.gcrs_data_generation import two_body, mu as MU
 
 
 # Endpoint closure tolerances. two_body and scipy both land well inside

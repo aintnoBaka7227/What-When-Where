@@ -1,32 +1,10 @@
-"""Reproduce Siminski et al. Fig. 9 (the sigma = 0.7" case) for this pipeline.
+"""Fig. 9 from a search run's saved output, into results/figures/<hash>/.
 
-Fig. 9 plots, against a decision threshold T applied to each tracklet
-pair's optimised loss min L (= L*):
-
-    false negative (FN) rate = true pairs rejected  (L* > T)   -- accept if L* <= T
-    false positive (FP) rate = false pairs accepted (L* <= T)
-
-as T is swept. The paper shows both the initial-value and boundary-value
-formulations at three noise levels; this reimplementation only has the
-boundary-value method, and its noisy chain is exactly the paper's 0.7"
-case (0.7" relative + 5" systematic astrometric error), so one panel with
-two curves is the faithful analogue.
-
-    uv run python src/lab/evaluation/figure9_fp_fn.py                 # log-T, auto range
-    uv run python src/lab/evaluation/figure9_fp_fn.py --paper-range   # linear T in [1, 20]
-
---paper-range matches the paper's axis exactly. With the optimiser in its
-current state some true pairs do not converge, so L* for those stays far
-above 20 and FN plateaus well above zero -- that gap IS the finding, not a
-plotting artefact. The auto (log) range shows where true and false losses
-actually separate.
-
-Writes figures/figure9_fp_fn_<variant>[_paper-range].png.
+    uv run python experiment/prod/prod_search.py <search hash>                 # log-T, auto range
+    uv run python experiment/prod/prod_search.py <search hash> --paper-range   # linear T in [1, 20]
 """
 
 import argparse
-import contextlib
-import io
 
 import numpy as np
 
@@ -34,8 +12,15 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from lab.search.optimise_hypothesis import run_association_test
+from lab.data.dataset import NOISY_VARIANTS, VARIANTS
 from lab.paths import FIGURES_DIR, PROJECT_ROOT
+from lab.runner import load_run
+
+
+def figure_dir(run_id):
+    path = FIGURES_DIR / run_id
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def sweep(true_losses, false_losses, thresholds):
@@ -54,24 +39,35 @@ def sweep(true_losses, false_losses, thresholds):
     return fn, fp
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Reproduce Siminski Fig. 9 (0.7\").")
-    parser.add_argument(
-        "--paper-range", action="store_true",
-        help="linear threshold axis T in [1, 20], matching the paper exactly",
-    )
-    parser.add_argument(
-        "--variant", default="noisy", choices=("noisy", "clean"),
-        help="dataset chain (default: noisy = the paper's 0.7\" case)",
-    )
-    args = parser.parse_args()
+def figure9(args):
+    """Reproduce Siminski et al. Fig. 9 (the sigma = 0.7" case) for this pipeline.
 
-    # run_association_test does the full Eq. (30) optimisation for every
-    # pair and prints a line each; we only want its returned (true, false)
-    # L* lists, so its own output is swallowed.
-    print(f"Running the all-vs-all association test ({args.variant}); ~10 s...")
-    with contextlib.redirect_stdout(io.StringIO()):
-        true_losses, false_losses = run_association_test(args.variant)
+    Fig. 9 plots, against a decision threshold T applied to each tracklet
+    pair's optimised loss min L (= L*):
+
+        false negative (FN) rate = true pairs rejected  (L* > T)   -- accept if L* <= T
+        false positive (FP) rate = false pairs accepted (L* <= T)
+
+    as T is swept. The paper shows both the initial-value and boundary-value
+    formulations at three noise levels; this reimplementation only has the
+    boundary-value method, and its noisy chain is exactly the paper's 0.7"
+    case (0.7" relative + 5" systematic astrometric error), so one panel with
+    two curves is the faithful analogue.
+
+    --paper-range matches the paper's axis exactly. With the optimiser in its
+    current state some true pairs do not converge, so L* for those stays far
+    above 20 and FN plateaus well above zero -- that gap IS the finding, not a
+    plotting artefact. The auto (log) range shows where true and false losses
+    actually separate.
+    """
+    output_dir = load_run(args.hash, "search")
+    with np.load(output_dir / f"association_{args.variant}.npz") as archive:
+        is_true, loss = archive["is_true"], archive["loss"]
+
+    true_losses, false_losses = loss[is_true], loss[~is_true]
+    if not true_losses.size or not false_losses.size:
+        raise SystemExit("Fig. 9 needs both true and false pairs; "
+                         "generate at least two objects")
 
     print(f"  {len(true_losses)} true pairs   L* in "
           f"[{min(true_losses):.2e}, {max(true_losses):.2e}]")
@@ -123,14 +119,14 @@ def main():
     ax_fp.set_ylabel("False positive [%]")
     ax_fn.set_ylim(0, max(5, fn.max() * 1.1))
     ax_fp.set_ylim(0, max(5, fp.max() * 1.1))
+    sigma = NOISY_VARIANTS.get(args.variant, 0.0)
     ax_fn.set_title(f"Fig. 9 analogue -- {args.variant} chain "
-                    f"($\\sigma_{{\\alpha,\\delta}} = 0.7''$), boundary-value only")
+                    f"($\\sigma_{{\\alpha,\\delta}} = {sigma}''$), boundary-value only")
     ax_fn.grid(True, alpha=0.25)
     ax_fn.legend(handles=[l1, l2], loc="center right", framealpha=0.9)
 
     fig.tight_layout()
-    FIGURES_DIR.mkdir(exist_ok=True)
-    out = FIGURES_DIR / (
+    out = figure_dir(args.hash) / (
         f"figure9_fp_fn_{args.variant}"
         f"{'_paper-range' if args.paper_range else ''}.png"
     )
@@ -139,4 +135,14 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Draw Fig. 9 from a search run.")
+    parser.add_argument("hash", help="hash of a search run")
+    parser.add_argument(
+        "--paper-range", action="store_true",
+        help="linear threshold axis T in [1, 20], matching the paper exactly",
+    )
+    parser.add_argument(
+        "--variant", default="noisy_0.7as", choices=VARIANTS,
+        help="dataset chain (default: noisy_0.7as, the paper's 0.7\" case)",
+    )
+    figure9(parser.parse_args())

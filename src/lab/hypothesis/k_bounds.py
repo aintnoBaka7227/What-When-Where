@@ -28,7 +28,8 @@ import numpy as np
 from astropy.constants import GM_earth
 
 from lab.paths import DATA_DIR
-from lab.hypothesis.range_bounds import A_MIN, A_MAX, VARIANTS, ATTRIBUTABLES_FILES, population_for
+from lab.data.dataset import VARIANTS
+from lab.hypothesis.range_bounds import A_MIN, A_MAX, ATTRIBUTABLES_FILES, population_for
 
 
 # One k-bounds file per dataset chain, matching src/lab/hypothesis/range_bounds.py.
@@ -47,7 +48,7 @@ READABLE_OUTPUT_FILES = {
     for variant in VARIANTS
 }
 
-# km^3/s^2, matches src/lab/data/new_data_gen.py's unit convention.
+# km^3/s^2, matches src/lab/data/gcrs_data_generation.py's unit convention.
 MU = GM_earth.value / 1_000_000_000.0
 
 
@@ -107,7 +108,7 @@ def build_k_bounds(variant):
     Parameters
     ----------
     variant : str
-        Which dataset chain to process, "clean" or "noisy".
+        Which dataset chain to process, one of VARIANTS.
     """
     # The same population the range bounds use. k comes from the orbital
     # period, so only the semi-major axis limits matter here -- eccentricity

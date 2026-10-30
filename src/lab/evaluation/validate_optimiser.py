@@ -39,16 +39,15 @@ ends correct. Deciding whether a short curve is a real failure needs the
 truth-range comparison in step 3. This script only shows whether, and how
 far, the optimiser moved.
 
-Every run is captured to runs/, tied to a timestamp (or the --stamp
-`main.py --validate` passes so it matches that pipeline run's log):
+The per-evaluation trace goes to the data folder, which is the run's output
+folder when `experiment/run/run_evaluation.py` runs this:
 
-    runs/<stamp>-validate.log               the terminal output, verbatim
-    runs/optimiser_history_<variant>_<stamp>.csv   per-evaluation trace
+    optimiser_history_<variant>.csv
         (columns pair, object/tracklet ids, is_true, k, eval, rho_1,
          rho_2, loss) -- for plotting eval-number against log10(L) elsewhere
 
-    uv run python src/lab/evaluation/validate_optimiser.py            # own timestamp
-    uv run python src/lab/evaluation/validate_optimiser.py --no-log   # terminal only
+    uv run python src/lab/evaluation/validate_optimiser.py            # with the CSV
+    uv run python src/lab/evaluation/validate_optimiser.py --no-csv   # terminal only
 
 This does not fix anything; it is a diagnostic you run when a true pair's
 L* looks wrong.
@@ -57,14 +56,11 @@ L* looks wrong.
 import argparse
 import contextlib
 import csv
-import sys
-from datetime import datetime
 
 import numpy as np
 
+from lab.data.dataset import VARIANTS, data_file, load_data
 from lab.hypothesis.range_bounds import (
-    VARIANTS,
-    GENERATED_DATA_FILES,
     ATTRIBUTABLES_FILES,
     population_for,
     v_s_i_at_epoch,
@@ -75,43 +71,13 @@ from lab.search.optimise_hypothesis import (
     optimize_hypothesis,
     _INFEASIBLE_PENALTY,
 )
-from lab.paths import PROJECT_ROOT, RUNS_DIR
+from lab.paths import DATA_DIR
 
 # "No step taken": L-BFGS-B evaluated the objective at least this many times
 # -- its finite-difference gradient told it to move -- yet completed at most
 # this many iterations. Every trial step was rejected.
 _NOSTEP_MIN_NFEV = 20
 _NOSTEP_MAX_NIT = 1
-
-
-class _Tee:
-    """A stdout stand-in that also copies everything to a log file."""
-
-    def __init__(self, stream, log_file):
-        self._stream = stream
-        self._log = log_file
-
-    def write(self, text):
-        self._stream.write(text)
-        self._log.write(text)
-
-    def flush(self):
-        self._stream.flush()
-        self._log.flush()
-
-
-@contextlib.contextmanager
-def _capture_to(log_file):
-    """Redirect print() to both the terminal and log_file for the block."""
-    if log_file is None:
-        yield
-        return
-    original = sys.stdout
-    sys.stdout = _Tee(original, log_file)
-    try:
-        yield
-    finally:
-        sys.stdout = original
 
 
 def _pair_inputs(variant):
@@ -122,8 +88,7 @@ def _pair_inputs(variant):
     """
     a_min, a_max, _ = population_for(variant)
 
-    with np.load(GENERATED_DATA_FILES[variant]) as archive:
-        data = archive["data"]
+    data = load_data(variant)
 
     with np.load(RANGE_BOUNDS_FILES[variant]) as archive:
         rb_object_ids = archive["object_id"]
@@ -215,13 +180,9 @@ def _format_trace(running_min, points=16):
     )
 
 
-def validate_variant(variant, stamp, write_csv=True):
+def validate_variant(variant, write_csv=True):
     """Trace and report every optimisation for one dataset chain."""
-    csv_path = (
-        RUNS_DIR / f"optimiser_history_{variant}_{stamp}.csv" if write_csv else None
-    )
-    if write_csv:
-        RUNS_DIR.mkdir(exist_ok=True)
+    csv_path = DATA_DIR / f"optimiser_history_{variant}.csv" if write_csv else None
 
     n_runs = 0
     winners = []  # (label, is_true, best_k, best_loss, best_marker)
@@ -324,7 +285,7 @@ def validate_variant(variant, stamp, write_csv=True):
     print("false pair or a wrong k produces the same short, flat curve. Confirm")
     print("with step 3 -- compare L* against L at the known true ranges.")
     if csv_path is not None:
-        print(f"per-evaluation trace: {csv_path.relative_to(PROJECT_ROOT)}")
+        print(f"per-evaluation trace: {csv_path}")
 
 
 def main():
@@ -332,47 +293,24 @@ def main():
         description="Trace every stage-8 optimisation and report convergence.",
     )
     parser.add_argument(
-        "--stamp", default=None,
-        help="timestamp tag for the output files; defaults to now, and "
-             "main.py --validate passes its run's stamp so they match that log",
-    )
-    parser.add_argument(
-        "--no-log", action="store_true",
-        help="print to the terminal only; do not write runs/<stamp>-validate.log",
+        "--no-csv", action="store_true",
+        help="print to the terminal only; do not write the per-evaluation trace",
     )
     args = parser.parse_args()
 
-    stamp = args.stamp or datetime.now().strftime("%Y-%m-%d-%H%M%S")
+    for variant in VARIANTS:
+        if not (
+            data_file(variant).exists()
+            and ATTRIBUTABLES_FILES[variant].exists()
+            and RANGE_BOUNDS_FILES[variant].exists()
+            and K_BOUNDS_FILES[variant].exists()
+        ):
+            print(f"Skipping {variant}: inputs missing")
+            continue
 
-    log_file = None
-    if not args.no_log:
-        RUNS_DIR.mkdir(exist_ok=True)
-        log_file = (RUNS_DIR / f"{stamp}-validate.log").open("w")
-
-    with _capture_to(log_file):
-        if log_file is not None:
-            rule = "=" * 68
-            print(f"{rule}\n optimiser validation -- {stamp}\n{rule}")
-
-        for variant in VARIANTS:
-            if not (
-                GENERATED_DATA_FILES[variant].exists()
-                and ATTRIBUTABLES_FILES[variant].exists()
-                and RANGE_BOUNDS_FILES[variant].exists()
-                and K_BOUNDS_FILES[variant].exists()
-            ):
-                print(f"Skipping {variant}: inputs missing")
-                continue
-
-            print(f"--- {variant} ---")
-            validate_variant(variant, stamp, write_csv=not args.no_log)
-            print()
-
-        if log_file is not None:
-            print(f"log: runs/{stamp}-validate.log")
-
-    if log_file is not None:
-        log_file.close()
+        print(f"--- {variant} ---")
+        validate_variant(variant, write_csv=not args.no_csv)
+        print()
 
 
 if __name__ == "__main__":

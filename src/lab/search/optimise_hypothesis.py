@@ -36,9 +36,9 @@ import numpy as np
 from astropy.constants import GM_earth
 from scipy.optimize import minimize
 
+from lab.data.dataset import VARIANTS, data_file, load_data
 from lab.hypothesis.range_bounds import (
-    VARIANTS,
-    GENERATED_DATA_FILES,
+    ASSOCIATION_FILES,
     ATTRIBUTABLES_FILES,
     A_MIN,
     A_MAX,
@@ -176,7 +176,7 @@ def optimize_hypothesis(
     Parameters
     ----------
     variant : str
-        Which dataset chain is being scored, "clean" or "noisy". Selects
+        Which dataset chain is being scored, one of VARIANTS. Selects
         the loss: the noisy chain uses the covariance-weighted Eq. (18),
         the clean chain the unweighted residual (see
         src/lab/scoring/discriminator_loss.py).
@@ -290,8 +290,7 @@ def run_association_test(variant):
     # lands outside [rho_min, rho_max] and gets clipped to a box corner.
     a_min, a_max, _ = population_for(variant)
 
-    with np.load(GENERATED_DATA_FILES[variant]) as archive:
-        data = archive["data"]
+    data = load_data(variant)
 
     with np.load(RANGE_BOUNDS_FILES[variant]) as archive:
         rb_object_ids = archive["object_id"]
@@ -337,7 +336,11 @@ def run_association_test(variant):
         )
 
         is_true_pair = int(rb_object_ids[i]) == int(rb_object_ids[j])
-        results.append((idx, is_true_pair, k_opt, loss_opt))
+        results.append((
+            int(rb_object_ids[i]), int(rb_tracklet_ids[i]),
+            int(rb_object_ids[j]), int(rb_tracklet_ids[j]),
+            is_true_pair, k_opt, rho_1_opt, rho_2_opt, loss_opt,
+        ))
 
         print(
             f"Object {int(rb_object_ids[i])} tracklet {int(rb_tracklet_ids[i])} <-> "
@@ -346,8 +349,18 @@ def run_association_test(variant):
             f"k*={k_opt}, rho*=({rho_1_opt:.1f}, {rho_2_opt:.1f}) km, L*={loss_opt:.6e}"
         )
 
-    true_losses = [loss for _, is_true, _, loss in results if is_true]
-    false_losses = [loss for _, is_true, _, loss in results if not is_true]
+    object_1, tracklet_1, object_2, tracklet_2, is_true, k, rho_1, rho_2, loss = (
+        np.array(column) for column in zip(*results)
+    )
+    np.savez(
+        ASSOCIATION_FILES[variant],
+        object_id_1=object_1, tracklet_id_1=tracklet_1,
+        object_id_2=object_2, tracklet_id_2=tracklet_2,
+        is_true=is_true, k=k, rho_1_km=rho_1, rho_2_km=rho_2, loss=loss,
+    )
+
+    true_losses = loss[is_true].tolist()
+    false_losses = loss[~is_true].tolist()
 
     print()
     print(f"True pairs:  n={len(true_losses)}, min L* range "
@@ -365,7 +378,7 @@ if __name__ == "__main__":
     # judged on its own true-vs-false separation.
     for variant in VARIANTS:
         if not (
-            GENERATED_DATA_FILES[variant].exists()
+            data_file(variant).exists()
             and ATTRIBUTABLES_FILES[variant].exists()
             and RANGE_BOUNDS_FILES[variant].exists()
             and K_BOUNDS_FILES[variant].exists()

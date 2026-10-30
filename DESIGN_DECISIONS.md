@@ -7,8 +7,7 @@ table numbers refer to Siminski et al. (2014), `sources/siminski.pdf`.
 
 The pipeline is divided into eight phases, each with one job. Phase names describe
 responsibility; stage numbers [1]–[8] are the execution order used in
-[PIPELINE.md](PIPELINE.md) and [README.md](README.md). Stage 6 of `main.py`'s
-run list is stage [8] here, because `main.py` leaves out the two library stages.
+[PIPELINE.md](PIPELINE.md) and [README.md](README.md).
 
 | Phase | Question it answers | Stage | Code | Output | Status |
 | --- | --- | --- | --- | --- | --- |
@@ -27,11 +26,27 @@ run list is stage [8] here, because `main.py` leaves out the two library stages.
 | --- | --- |
 | Code lives in `src/lab/<phase>/`, one directory per phase | The directory says what a module is responsible for. Decision has no directory until it has code. |
 | `lab` is an installed package, and modules import as `lab.<phase>.<module>` | Replaces per-script `sys.path` edits. `uv sync` installs it in editable mode. |
-| Stage scripts run by file path | `main.py` runs each one as a separate process, so a failure stays isolated. |
-| Generated files go in `data/`, figures in `figures/`, logs in `runs/` | `src/` holds only code. `src/lab/paths.py` defines these locations. |
+| Stage scripts run by file path | `src/lab/runner.py` runs each one as a separate process, so a failure stays isolated. |
+| Run outputs go in `results/`, other generated data in `data/` | `src/` holds only code. `src/lab/paths.py` defines these locations. |
 | Tests go in `test/` | One place for all suites. |
-| `main.py` stays at the project root | It orchestrates the stages and imports none of them. |
 | `range_bounds.py` remains the file registry | Moved unchanged in role. `create_attributes_vector.py` still keeps its own list, so stage 2 does not depend on stage 3. |
+
+### Experiments and results
+
+| Decision | Reason |
+| --- | --- |
+| One `experiment/run/run_<stage>.py` per stage | Each stage can be run, and its result inspected, by itself. Together they replace `main.py`. |
+| One `experiment/prod/prod_<stage>.py` per stage with figures, reading only a run's saved files | A figure always shows a specific recorded result, and redrawing it repeats no computation. |
+| A stage takes `--parent <hash>`, or `-n N` to build everything upstream | A stage can reuse a chosen result or run from nothing. Both modes share one code path. |
+| Parents follow what a stage reads, not stage number | Model, Scoring and Search each read Hypothesis's output. They use each other as libraries only. Evaluation reads Search. |
+| Stages 5–7 save results through their run scripts | `run_model.py` saves candidates at the range-bound midpoints, and `run_scoring.py` saves loss surfaces. Those stages otherwise persist nothing. |
+| Each run has a folder `results/runs/<hash>/` with `config.json`, `run.log` and `output/` | A result stays with what produced it, and runs cannot overwrite each other. |
+| `output/` links to the parent's files, and `config.json` lists the stage's own in `outputs` | Stage code reads and writes one folder, so it runs unchanged. Deleting a parent run breaks its children. |
+| The hash covers stage, parameters, parent and a content hash of `src/lab/` and `experiment/run/` | Uncommitted edits are captured too, which a Git commit alone would miss. `config.json` records the commit for reference. |
+| A completed config is reused without `--force` | Generation is seeded and the optimiser is deterministic, so the result would be identical. |
+| Stages find their folder through `LAB_DATA_DIR` | Stage scripts stay runnable by hand, against `data/`. |
+| Figures go in `results/figures/<hash>/` | The same hash links a figure to its run. |
+| Output from before this scheme is in `results/{runs,figures}/legacy/` | It has no config, so it cannot be given a hash. |
 
 ### Boundaries
 
@@ -48,12 +63,12 @@ run list is stage [8] here, because `main.py` leaves out the two library stages.
 - **Evaluation** consumes results and feeds nothing back into the method.
 
 `run_association_test` currently sits inside Search but does Evaluation work: it
-compares results against `object_id`. `src/lab/evaluation/figure9_fp_fn.py` sweeps thresholds
+compares results against `object_id`. `experiment/prod/prod_search.py` sweeps thresholds
 to plot FP/FN rates, but that is a measurement and does not make a decision.
 
 ### Clean and noisy chains
 
-Every phase runs over both chains, which share everything except the measured
+Every phase runs over all four chains, which share everything except the measured
 angles. Scoring is where their method differs: clean uses the unweighted loss and
 noisy uses the weighted loss. Adding the 1.2″ and 2.0″ noise levels means adding
 chains, which currently requires editing `VARIANTS` in `range_bounds.py` and
@@ -61,16 +76,11 @@ chains, which currently requires editing `VARIANTS` in `range_bounds.py` and
 
 ### Current state of the Data phase
 
-`src/lab/data/new_data_gen.py` is still the generator the pipeline calls.
-`src/lab/data/gcrs_data_generation.py` is intended for this phase but does not yet
-produce what Observation reads. The pipeline's `generated_data_{clean,noisy}.npz`
-files were removed in `a93b7e9`, so it needs `main.py --objects N` to run.
+`experiment/run/run_data.py` calls `src/lab/data/gcrs_data_generation.py`, and
+later stages read its text files through `src/lab/data/dataset.py`. The earlier
+generators are kept as `stale_new_data_gen.py` and `stale_data_generation.py`.
 
 ## Data generation: `src/lab/data/gcrs_data_generation.py`
-
-Status as of commit `a93b7e9`. This generator is not connected to the pipeline
-yet: stages 2 onward still read the `.npz` files written by
-`src/lab/data/new_data_gen.py` (see [Open issues](#open-issues)).
 
 ### Purpose
 
@@ -111,15 +121,13 @@ which gives a uniform `a` over the bounds for the drawn `e`.
 | Decision | Value | Reason |
 | --- | --- | --- |
 | Tracklets per object | 5 | Yields pairs at several separations. |
-| Tracklet start spacing | 13 h | Pairs are 13, 26, 39 and 52 h apart. Multiples of 12 h are close to multiples of half a GEO period, where Lambert's problem is degenerate. |
+| Tracklet schedule | 0, 13, 29, 37, 53 h | Unequal gaps go degenerate at different orbital periods, so one period cannot ruin every pair of an object. |
+| Jitter | Up to ±2 h on each tracklet after the first | Adds randomness. Simulated over the `a` range, it stays near the fixed schedule: 5.6% of pairs within 5° of 0°/180°, against 13.2% for even 13 h spacing, and 0.05% of objects lose half their pairs, against 11.8%. |
+| Start offset | Up to 24 h per object | Objects are not observed at the same epochs, so no pair is dropped for having no time gap. |
 | Observations per tracklet | 5 | Upper end of Table 2's 3–5. |
 | Tracklet duration | 80 s, sampled every 20 s | Table 2's 1–2 min, and the ~20 s spacing in Section 6. |
 
-At exactly GEO (`a = 42,164 km`), the 13 h spacing keeps transfer angles 15.5°,
-31.1°, 46.6° and 62.1° away from 0°/180°. This protection is specific to periods
-near 24 h; see [Open issues](#open-issues).
-
-The total span of 52 h is longer than the ~27 h of the paper's data set (Table
+The total span of about 53 h, plus the offset, is longer than the ~27 h of the paper's data set (Table
 2). The paper does discuss separations of up to two days (Section 6.2).
 
 ### Stations
@@ -145,7 +153,7 @@ and refraction are not modelled.
 | Systematic noise | 5″ | Section 6.1. |
 | Systematic draw | Once per tracklet, for RA and Dec separately | Section 6 describes an exposure-epoch offset, which stays constant across a tracklet. The model applies it as an angle bias rather than a timing error. |
 | Shared unit draws | Noise is drawn once and scaled to each level | Files differ only in noise amplitude, so a change in results between levels comes from sigma rather than chance. |
-| RA noise | Not divided by `cos(dec)` | Matches `new_data_gen.py` and the fitter. On-sky RA noise therefore shrinks at high declination. |
+| RA noise | Not divided by `cos(dec)` | Matches the fitter. On-sky RA noise therefore shrinks at high declination. |
 | RA wrap | `% 2π` after noise | Keeps RA in 0–2π. `src/lab/observation/fit_attributes.py` unwraps it before fitting. |
 
 ### Output files
@@ -170,8 +178,13 @@ The files are row-aligned and differ only in columns 6–7:
 | 14 | Time since epoch | s |
 | 15–17 | `tracklet_id`, `object_id`, `observation_id` | |
 
-Values are written with full float precision, unlike the `%f` text copies from
-`new_data_gen.py`, which quantise the angles.
+| Decision | Reason |
+| --- | --- |
+| Text files are canonical | Values are written at full precision and read back exactly, and they can be read directly. |
+| One settings record per dataset | Holds the noise and population values that the rows cannot. `src/lab/data/dataset.py` supplies them to later stages. |
+| One chain per noise level | All levels run together, so results can be compared across levels from one run. |
+| Seeded with `default_rng(object_id)` | Object *n* is always identical, so a run hash identifies its data. |
+| Noise draws are unit normals shared across levels | Levels differ only in amplitude. |
 
 ### Appending and integrity
 
@@ -188,35 +201,16 @@ To reset, delete all `data/generated_data_gcrs_*` files.
 
 ### Open issues
 
-**Not connected to the pipeline.** `create_attributes_vector.py` and
-`range_bounds.py` read `data/generated_data_{clean,noisy}.npz`, with a
-`data` array plus `relative_uncertainty_arcsec` and
-`systematic_uncertainty_arcsec`. This generator writes text files to `data/`,
-and the pipeline only has `clean` and `noisy` variants, not three noise levels.
-
-**Generation is not reproducible.** It uses the unseeded global `np.random`,
-while `new_data_gen.py` uses `default_rng(object_id)`. The settings record stores
-the orbit, stations and biases, but not the per-observation noise draws.
-
-**The 13 h spacing does not protect the whole semi-major axis range.** Near
-`a = 44,556 km` the period is 26 h, so all four separations are multiples of half
-a period. At `a = 38,398 km` the 52 h separation is too.
-
-| Near-degenerate pair (within X of 0°/180°) | Share of the `a` range |
-| --- | --- |
-| Within 1° | 5.5% |
-| Within 5° | 21.9% |
-| Within 10° | 37.0% |
-
-The committed object (`a = 43,774 km`) has a 175.6° transfer angle at 13 h. The
-effect on the Lambert solver and on stage 8 has not been measured.
+**Degenerate pairs cannot be removed completely.** Every time gap is degenerate
+for some orbital period. Randomised spacing limits how many pairs one object can
+lose, and a flag on near-0°/180° pairs belongs in the Search stage.
 
 **Recorded station offset is not the true offset.** The rotation axis is not
 perpendicular to the sub-satellite direction, so the true separation is at most
 the rotation angle. `station_offset_from_subsatellite_deg` stores the rotation
 angle: tracklet 0 records 36.39° where the true separation is 16.10°. Under this
 sampling the true separation has a median of 16.7° and a 95th percentile of 37.9°.
-The 45° limit still holds. `new_data_gen.py` samples the same way.
+The 45° limit still holds. 
 
 **Inclination is not near-GEO.** The 1–179° range includes polar and retrograde
 orbits, which are easier to separate than the paper's population.

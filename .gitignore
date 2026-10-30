@@ -12,8 +12,5 @@ wheels/
 # macOS
 .DS_Store
 
-# Pipeline run logs
-runs/
-
-# Generated figures (scripts in figures/ are tracked)
-figures/**/*.png
+# Experiment runs and figures
+results/

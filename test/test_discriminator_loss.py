@@ -41,7 +41,7 @@ from lab.scoring.discriminator_loss import (
     evaluate_loss,
 )
 from lab.model.model_rates import angle_rate_from_state
-from lab.data.new_data_gen import two_body
+from lab.data.gcrs_data_generation import two_body
 
 EARTH_ROTATION_RATE = 7.292115e-5  # rad/s
 EARTH_RADIUS_KM = 6378.137
@@ -304,7 +304,7 @@ def test_evaluate_loss_dispatches_by_variant():
     g = geometry
 
     assert LOSS_FUNCTIONS["clean"] is discriminator_loss_unweighted
-    assert LOSS_FUNCTIONS["noisy"] is discriminator_loss
+    assert LOSS_FUNCTIONS["noisy_0.7as"] is discriminator_loss
 
     clean = evaluate_loss(
         "clean", g["rho_1"], g["rho_2"], g["k"],
@@ -312,7 +312,7 @@ def test_evaluate_loss_dispatches_by_variant():
         g["r_s2"], g["v_s2"], g["t2"], g["attributable_2"], ca,
     )
     noisy = evaluate_loss(
-        "noisy", g["rho_1"], g["rho_2"], g["k"],
+        "noisy_0.7as", g["rho_1"], g["rho_2"], g["k"],
         g["r_s1"], g["v_s1"], g["t1"], g["attributable_1"], ca,
         g["r_s2"], g["v_s2"], g["t2"], g["attributable_2"], ca,
     )

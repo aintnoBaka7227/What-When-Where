@@ -6,13 +6,13 @@ project structure, see [README.md](README.md).
 ## Data flow
 
 ```
-data/         new_data_gen.py                              [1]
+data/         gcrs_data_generation.py                      [1]
                      |
-       generated_data_{clean,noisy}.npz
+       generated_data_gcrs_<chain>.txt
                      |
 observation/  create_attributes_vector.py                  [2]
                      |
-       generated_attributables_{clean,noisy}.npz
+       generated_attributables_<chain>.npz
               |                        |
 hypothesis/   range_bounds.py          k_bounds.py         [3] [4]
               |                        |
@@ -32,16 +32,22 @@ search/       optimise_hypothesis.py                       [8]
 
 Code paths are relative to `src/lab/`. Every generated file is in `data/`.
 
-Stages 1–4 write files. Stages 5–8 persist nothing: stages 5 and 8 print results
-from their `__main__` blocks, and stages 6 and 7 are pure libraries.
+Stages 1–4 and 8 write files. Stage 5 prints a demonstration from its `__main__`
+block, and stages 6 and 7 are pure libraries.
 
-Every stage processes both the `clean` and `noisy` variants in one invocation
-and skips a variant whose inputs are missing.
+Through `experiment/run/run_<stage>.py`, every stage saves a result in its own
+`results/runs/<hash>/output/`. Those scripts also save results for stages 5–7:
+`model_{variant}.npz` from `run_model.py` and `surface_*.npz` from
+`run_scoring.py`. A stage script run by hand uses `data/`.
+
+Every stage processes all chains in one invocation (`clean`, `noisy_0.7as`,
+`noisy_1.2as`, `noisy_2.0as`, defined in `src/lab/data/dataset.py`) and skips a
+chain whose inputs are missing.
 
 ## Shared conventions
 
-**The `data` matrix** written by stage 1 and read by stages 3 and 6–8 has 17
-columns:
+**The `data` matrix** written by stage 1 and read by stages 2, 3 and 6–8 has
+18 columns:
 
 | Cols | Meaning | Units |
 |---|---|---|
@@ -54,6 +60,7 @@ columns:
 | 14 | observation time since epoch | s |
 | 15 | tracklet ID | — |
 | 16 | object ID | — |
+| 17 | observation ID | — |
 
 Columns 6–7 are the **only** columns that differ between the clean and noisy
 files. Columns 0–5 are ground truth and are never read by the association
@@ -71,46 +78,27 @@ stage 3.)
 
 ---
 
-## [1] `src/lab/data/new_data_gen.py`
+## [1] `src/lab/data/gcrs_data_generation.py`
 
-Generates one synthetic near-GEO object per run and appends it to both datasets.
+Generates one synthetic near-GEO object per run and appends it to every chain.
 
-**Input.** Its own prior output, if present. Both `.npz` files must exist or
-neither — the mismatch is caught and raised, since the two must stay in step.
+**Input.** Its own prior output, if present. The data files and settings record
+must agree, or it raises before writing.
 
 **Output.**
 
 | File | Contents |
 |---|---|
-| `data/generated_data_clean.npz` | exact angles |
-| `data/generated_data_noisy.npz` | angles + measurement error |
-| `..._clean.txt`, `..._noisy.txt` | readable copies (lossy, `%f`) |
+| `generated_data_gcrs_clean.txt` | exact angles |
+| `generated_data_gcrs_noisy_{0.7,1.2,2.0}as.txt` | angles + measurement error at that level |
+| `generated_data_gcrs_settings.json` | generation settings, plus each object's drawn orbit, stations and biases |
 
-Each `.npz` holds:
+The text files are canonical: values are written at full precision and read back
+exactly. `src/lab/data/dataset.py` reads them, and supplies each chain's
+uncertainties and the orbit population from the settings record.
 
-| Key | Shape | Meaning |
-|---|---|---|
-| `data` | (N, 17) | the matrix above |
-| `true_angles` | (N, 5) | `[alpha, delta, t, tracklet_id, object_id]`, noise-free |
-| `relative_uncertainty_arcsec` | scalar | 0.0 clean, 0.7 noisy |
-| `systematic_uncertainty_arcsec` | scalar | 0.0 clean, 5.0 noisy |
-| `random_seed` | scalar | the object ID this run generated |
-
-**What it does.** Draws a near-GEO orbit (`a ∈ [38000, 45000] km`,
-`e ≤ 0.01` for the default test case `'a'`), then for each of 3 tracklets
-places a ground station beneath the sub-satellite point, propagates the orbit
-with `two_body`, and converts the site-relative position to RA/Dec. Tracklets
-are 5 points 30 s apart, separated by 12 h.
-
-Noise is applied per tracklet as one constant RA bias and one constant Dec bias
-(the systematic term), plus an independent draw per observation (the relative
-term).
-
-**Notes.** Appends one object per run, seeded by `object_id`, so runs are
-reproducible and repeatable. Station placement guarantees visibility by
-construction — every object is above the horizon at every epoch. Test cases
-`'b'`–`'d'` raise eccentricity beyond what stage 3's `E_MAX` assumes; only
-`'a'` is consistent with the rest of the pipeline as configured.
+**What it does.** See [DESIGN_DECISIONS.md](DESIGN_DECISIONS.md) for the design.
+Each object is seeded with its `object_id`, so object *n* is always identical.
 
 ---
 
@@ -118,7 +106,7 @@ construction — every object is above the horizon at every epoch. Test cases
 
 Compresses each tracklet's RA/Dec series into a single attributable.
 
-**Input.** `data/generated_data_{variant}.npz` — columns 6, 7, 14, 15, 16,
+**Input.** `generated_data_gcrs_{variant}.txt` — columns 6, 7, 14, 15, 16,
 plus the two uncertainty scalars.
 
 **Output.** `data/generated_attributables_{variant}.npz` (+ `.txt`):
@@ -147,7 +135,7 @@ clean chain cannot use any loss that inverts `Ca`. See stage 7.
 Bounds the topocentric range for each tracklet — half the admissible region.
 
 **Input.** `generated_attributables_{variant}.npz` (for `alpha`, `delta`, `t0`)
-and `generated_data_{variant}.npz` (for site position, interpolated to `t0`).
+and `generated_data_gcrs_{variant}.txt` (for site position, interpolated to `t0`).
 
 **Output.** `data/range_bounds_{variant}.npz` (+ `.txt`):
 
@@ -200,8 +188,8 @@ test — the method is not told which tracklets belong together. Pairs with
 objects share a start epoch. For T tracklets across O objects this gives fewer
 than `C(T,2)` pairs.
 
-Because `k` depends only on `t0`, which the two chains share exactly, the clean
-and noisy files come out **identical**. They are still written separately so
+Because `k` depends only on `t0`, which the chains share exactly, their files
+come out **identical**. They are still written separately so
 each chain stays self-contained.
 
 ---
@@ -257,7 +245,7 @@ differences before running the demo.
 ## [7] `src/lab/scoring/discriminator_loss.py`
 
 Scores how badly a hypothesis's predicted rates disagree with the measured ones.
-**This is where the two chains diverge.**
+**This is where the chains diverge.**
 
 **Input.** All four upstream `.npz` files. Writes nothing.
 
@@ -265,7 +253,7 @@ Scores how badly a hypothesis's predicted rates disagree with the measured ones.
 
 | Function | Used by | Formula |
 |---|---|---|
-| `discriminator_loss` | noisy | `residualᵀ (C_z_dot + C_z_hat_dot)⁻¹ residual` |
+| `discriminator_loss` | noisy chains | `residualᵀ (C_z_dot + C_z_hat_dot)⁻¹ residual` |
 | `discriminator_loss_unweighted` | clean | `‖residual‖²`, in arcsec²/s² |
 
 Both are built on `rate_residuals()`, which computes `z_dot − z_hat_dot` per
@@ -303,7 +291,16 @@ happens to match the printed form is a coincidence, not the reason for it.
 Searches the admissible region for the best-fitting orbit. **The actual
 association test.**
 
-**Input.** All four upstream `.npz` files. Writes nothing — prints results.
+**Input.** All four upstream `.npz` files.
+
+**Output.** `association_{variant}.npz`, one row per pair:
+
+| Key | Meaning |
+|---|---|
+| `object_id_1`, `tracklet_id_1`, `object_id_2`, `tracklet_id_2` | the pair |
+| `is_true` | ground truth: same object |
+| `k`, `rho_1_km`, `rho_2_km` | the best hypothesis |
+| `loss` | its loss, `L*` |
 
 **Key functions.**
 
@@ -326,16 +323,20 @@ than propagating, so the optimiser can walk out of infeasible regions.
 
 ## Current status
 
-All eight stages run end to end on both chains. On a four-object dataset
-(12 tracklets, 48 pairs), both chains separate true from false pairs completely:
+All eight stages run end to end on all four chains. On a 10-object GCRS dataset
+(50 tracklets, 1,225 pairs), run `1a780a3618b7`:
 
-| chain | true pairs | false pairs | margin |
+| chain | best false pair | true pairs at or above it | false pairs at the penalty value |
 |---|---|---|---|
-| clean | 7.09e−09 – 3.32e−05 | 1.21e+02 – 2.39e+03 | 3.6e+06 × |
-| noisy | 7.14e−02 – 7.54e+03 | 2.21e+06 – 4.38e+07 | 293 × |
+| clean | 2.00e+01 | 15 of 100 | 52 |
+| noisy_0.7as | 1.61e+05 | 15 of 100 | 52 |
+| noisy_1.2as | 5.46e+04 | 15 of 100 | 52 |
+| noisy_2.0as | 1.95e+04 | 15 of 100 | 52 |
 
-Every same-object pair scores below every different-object pair, so a single
-threshold classifies all 48 correctly in each chain.
+The 15 failures are a Search problem. All 100 true pairs score at most 2.1e−05 at
+their true ranges and `k` on the clean chain. In 5 failures, the only `k` tried
+returns the 1e+12 penalty; in the other 10, Search chooses the wrong `k`. Only 1 of
+the 15 is within 5° of 0°/180°, so degeneracy is not the main cause.
 
 ## What's not built yet
 
@@ -349,20 +350,16 @@ threshold classifies all 48 correctly in each chain.
   — and the reason it says false associations "cannot be completely eliminated"
   — is closely spaced objects on similar orbits. Reproducing Fig. 9 needs that
   scenario, not just more random objects.
-- **Other noise cases.** The paper tests 0.7″, 1.2″ and 2.0″ relative error.
-  Only 0.7″ is wired up. Adding the others means extending `VARIANTS` in
-  `src/lab/hypothesis/range_bounds.py` *and* `DATASETS` in
-  `src/lab/observation/create_attributes_vector.py`.
 
 ## Gotchas
 
-- **Stage 1 appends.** Every run adds one object. Delete
-  `data/generated_data_{clean,noisy}.{npz,txt}` to reset.
+- **Stage 1 appends.** Every run adds one object. Run scripts start each
+  dataset empty; delete
+  `data/generated_data_gcrs_*` to reset stages run by hand.
 - **One object means no test.** A single object gives only same-object pairs, so
   stage 8 reports `False pairs: none` and proves nothing.
-- **The `.txt` files are lossy.** RA/Dec are written with `%f` — six decimals is
-  0.206″ of quantisation against 0.7″ of noise. Never reproduce results from
-  them; the `.npz` is canonical.
+- **Stage 2 onward `.txt` files are for reading.** Their `.npz` files are canonical.
+  Stage 1's `.txt` files are canonical and exact.
 - **Clean data cannot use the weighted loss.** It raises
   `LinAlgError: Singular matrix`. This is handled automatically by
   `LOSS_FUNCTIONS`, but matters if you call the loss directly.

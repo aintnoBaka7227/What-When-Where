@@ -20,23 +20,15 @@ Here, rho_i is the topocentric range from the observing site to the object.
 
 import numpy as np
 
+from lab.data.dataset import VARIANTS, data_file, load_data, population
 from lab.paths import DATA_DIR
 
-# src/lab/data/new_data_gen.py generates two datasets from one orbit, one set of
-# stations and one set of epochs: "clean" carries the exact angles, "noisy"
-# carries the same angles with Siminski measurement error applied. Every stage
-# from here down runs both as two independent chains, so a result can always be
-# compared against its own noise-free counterpart.
+# Every stage from here down runs each chain in lab.data.dataset.VARIANTS
+# independently, so a result can always be compared against its own noise-free
+# counterpart.
 #
-# This module is the path authority for the whole pipeline: the later stages
+# This module is the path authority for the derived files: the later stages
 # import these dictionaries rather than building paths themselves.
-VARIANTS = ("clean", "noisy")
-
-GENERATED_DATA_FILES = {
-    variant: DATA_DIR / f"generated_data_{variant}.npz"
-    for variant in VARIANTS
-}
-
 ATTRIBUTABLES_FILES = {
     variant: DATA_DIR / f"generated_attributables_{variant}.npz"
     for variant in VARIANTS
@@ -47,16 +39,20 @@ PRECISION_OUTPUT_FILES = {
     for variant in VARIANTS
 }
 
+ASSOCIATION_FILES = {
+    variant: DATA_DIR / f"association_{variant}.npz"
+    for variant in VARIANTS
+}
+
 READABLE_OUTPUT_FILES = {
     variant: DATA_DIR / f"range_bounds_{variant}.txt"
     for variant in VARIANTS
 }
 
-# Fallback population limits, for datasets generated before
-# src/lab/data/new_data_gen.py began recording its own. Everything below
-# goes through population_for() instead: E_MAX = 0.01 describes test case
-# 'a' alone, and applying it to an eccentric population silently puts the
-# true range outside the region the optimizer may search.
+# Default population limits. The stages go through population_for() instead:
+# E_MAX = 0.01 describes test case 'a' alone, and applying it to an eccentric
+# population silently puts the true range outside the region the optimizer may
+# search.
 A_MIN = 38_000.0
 A_MAX = 45_000.0
 E_MAX = 0.01
@@ -65,24 +61,15 @@ E_MAX = 0.01
 def population_for(variant):
     """The orbit population a dataset was actually generated from.
 
-    src/lab/data/new_data_gen.py records the semi-major axis and eccentricity
-    limits its test case sampled, so the admissible region (Eqs. 23-24)
-    follows the data rather than being pinned to one case. Datasets written
-    before those keys existed fall back to the module constants.
+    The generator records the semi-major axis and eccentricity limits its test
+    case sampled, so the admissible region (Eqs. 23-24) follows the data rather
+    than being pinned to one case. All chains share one population.
 
     Returns
     -------
     a_min, a_max, e_max : float
     """
-    with np.load(GENERATED_DATA_FILES[variant]) as archive:
-        if "a_min_km" not in archive:
-            return A_MIN, A_MAX, E_MAX
-
-        return (
-            float(archive["a_min_km"]),
-            float(archive["a_max_km"]),
-            float(archive["e_max"]),
-        )
+    return population()
 
 
 def calculate_r_min_r_max(
@@ -212,13 +199,12 @@ def build_range_bounds(variant):
     Parameters
     ----------
     variant : str
-        Which dataset chain to process, "clean" or "noisy". Only the
-        attributables differ between the two -- the site positions are
+        Which dataset chain to process, one of VARIANTS. Only the
+        attributables differ between chains -- the site positions are
         shared -- but each chain writes its own bounds file so the stages
         below never have to know which one they are working on.
     """
-    with np.load(GENERATED_DATA_FILES[variant]) as archive:
-        data = archive["data"]
+    data = load_data(variant)
 
     with np.load(ATTRIBUTABLES_FILES[variant]) as archive:
         object_ids = archive["object_id"]
@@ -364,13 +350,13 @@ def available_variants():
     return [
         variant
         for variant in VARIANTS
-        if GENERATED_DATA_FILES[variant].exists()
+        if data_file(variant).exists()
         and ATTRIBUTABLES_FILES[variant].exists()
     ]
 
 
 def main():
-    """Calculate range bounds for the clean and the noisy chain."""
+    """Calculate range bounds for every chain."""
     for variant in VARIANTS:
         if variant not in available_variants():
             print(f"Skipping {variant}: inputs missing")

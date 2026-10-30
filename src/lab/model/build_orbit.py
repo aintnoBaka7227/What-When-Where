@@ -23,10 +23,10 @@ from astropy.constants import GM_earth
 from lab.model.lambert import lambert_boundary_value, LambertNoSolution, LambertSolution
 from lab.hypothesis.k_bounds import k_grid
 from lab.hypothesis.k_bounds import PRECISION_OUTPUT_FILES as K_BOUNDS_FILES
-from lab.hypothesis.range_bounds import VARIANTS
+from lab.data.dataset import VARIANTS
 from lab.hypothesis.range_bounds import PRECISION_OUTPUT_FILES as RANGE_BOUNDS_FILES
 
-# km^3/s^2, matches src/lab/data/new_data_gen.py, src/lab/hypothesis/k_bounds.py.
+# km^3/s^2, matches src/lab/data/gcrs_data_generation.py, src/lab/hypothesis/k_bounds.py.
 MU = GM_earth.value / 1_000_000_000.0
 
 
@@ -131,7 +131,7 @@ def demo_variant(variant):
     Parameters
     ----------
     variant : str
-        Which dataset chain to demonstrate, "clean" or "noisy".
+        Which dataset chain to demonstrate, one of VARIANTS.
     """
     with np.load(RANGE_BOUNDS_FILES[variant]) as archive:
         rb_object_ids = archive["object_id"]

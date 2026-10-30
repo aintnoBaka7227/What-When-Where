@@ -28,11 +28,12 @@ vary. Its uncertainty enters solely through the Eq. (19) Jacobian.
 import numpy as np
 from astropy.constants import GM_earth
 
+from lab.data.dataset import NOISY_VARIANTS
 from lab.hypothesis.range_bounds import calculate_u_i
 from lab.model.build_orbit import build_orbit
 from lab.model.model_rates import modeled_angular_rates
 
-# km^3/s^2, matches src/lab/data/new_data_gen.py and friends.
+# km^3/s^2, matches src/lab/data/gcrs_data_generation.py and friends.
 MU = GM_earth.value / 1_000_000_000.0
 
 # Attributable ordering, fixed throughout this project: [alpha, alpha_dot, delta, delta_dot].
@@ -302,11 +303,11 @@ def discriminator_loss_unweighted(
     ]
 
 
-# Which loss scores each chain: clean has no covariance to weight by,
-# noisy is the paper's actual method.
+# Which loss scores each chain: clean has no covariance to weight by, every
+# noisy chain uses the paper's actual method.
 LOSS_FUNCTIONS = {
     "clean": discriminator_loss_unweighted,
-    "noisy": discriminator_loss,
+    **{variant: discriminator_loss for variant in NOISY_VARIANTS},
 }
 
 

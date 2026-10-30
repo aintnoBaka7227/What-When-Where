@@ -27,18 +27,19 @@ deliberate and documented (see "Eq. 18" below).
 `src/lab/model/lambert.py` is the only module with no pipeline dependencies, and
 `test/test_lambert.py` validates it. It is the safest place to start reading.
 
-## The two-chain design
+## The chain design
 
-Everything runs twice, over a `clean` and a `noisy` dataset generated together
-from the same orbit, stations and epochs. They differ **only** in the two
-measured-angle columns.
+Everything runs once per chain: `clean`, `noisy_0.7as`, `noisy_1.2as` and
+`noisy_2.0as`, generated together from the same orbits, stations and epochs. They
+differ **only** in the two measured-angle columns. `src/lab/data/dataset.py`
+defines them.
 
 This is not redundancy. The clean chain is the debugging instrument: with no
 measurement error, any nonzero residual is a code bug, not noise. It is how you
 tell "the Lambert solver is wrong" from "the noise model is doing its job". The
-noisy chain is the experiment.
+noisy chains are the experiment.
 
-Adding a stage means handling both variants. The established pattern is a
+Adding a stage means handling every variant. The established pattern is a
 `build_x(variant)` or `demo_variant(variant)` function plus a `main()` that
 loops over `VARIANTS` and skips any variant whose inputs are missing.
 
@@ -68,22 +69,23 @@ deliberate and argued in the `discriminator_loss.py` module docstring: the
 paper's own Eq. (21)/(13) derivation and its chi-squared claim both require the
 inverse. Do not "correct" the code to match the printed equation.
 
-**`k_bounds` writes identical clean and noisy files.** `k` depends only on `t0`,
-which both chains share. The duplication is intentional so each chain is
+**`k_bounds` writes identical files for every chain.** `k` depends only on `t0`,
+which the chains share. The duplication is intentional so each chain is
 self-contained.
 
 **`create_attributes_vector.py` keeps its own copy of the dataset paths** rather
 than importing the registry from `range_bounds.py`. This was considered and kept
 deliberately: importing would make stage 2 depend on stage 3, inverting the data
-flow. The cost is that adding a variant means editing two files.
+flow. Its list is built from `VARIANTS` in `lab.data.dataset`, which is stage 1,
+so adding a variant means editing that one file.
 
 ## Verified behaviour, so you don't re-derive it
 
 These were checked by running the code, not by reading it:
 
-- **Generation is deterministic.** `rng = default_rng(object_id)`, so object *n*
-  is always identical. Deleting everything and regenerating *n* objects
-  reproduces the previous dataset byte for byte.
+- **Generation is deterministic.** `rng = default_rng(object_id)`, so object *n* is
+  always identical, and regenerating *n* objects reproduces the dataset byte for
+  byte.
 - **The propagator is sound.** Over 24 h, `two_body` conserves `a`, `e` and `h`
   to ~1e-10 relative.
 - **Stations are real rotating-Earth sites.** `|v| = ω·r_eq` to 0.24%,
@@ -98,25 +100,32 @@ Run stages with `uv run python <path>`; `src/lab/paths.py` resolves locations
 from `__file__`, so the working directory doesn't matter. Stages import each
 other as `lab.<phase>.<module>`, which needs the editable install from `uv sync`.
 
-**Stage 1 appends one object per run.** A single object gives only same-object
-pairs, so stage 8 reports `False pairs: none` and tests nothing. Generate at
-least 3–4 objects before drawing conclusions. Reset with:
+**Run stages through `experiment/run/run_<stage>.py`.** Each takes `--parent
+<hash>` to use a previous stage's run, or `-n N` to run itself and everything
+upstream. Each run gets `results/runs/<hash>/`, holding `config.json`, `run.log`
+and `output/`. `output/` links to the parent's files, because a stage reads and
+writes one folder; `config.json`'s `outputs` lists what the stage produced. The
+hash covers the stage, parameters, parent and code, so any change under `src/lab/`
+or `experiment/run/` gives new hashes. New figures go in
+`experiment/prod/prod_<stage>.py` and must read a run's saved output rather than
+recompute it.
 
-```bash
-rm -f data/generated_data_{clean,noisy}.{npz,txt}
-```
+**Stage 1 appends one object per invocation.** `run_data.py -n N` handles
+this. A single object gives only same-object pairs, so stage 8 reports
+`False pairs: none` and tests nothing. Generate at least 3–4 objects before
+drawing conclusions.
 
 Stage 8 cost grows quadratically with tracklet count — four objects is ~90 s, so
 background it rather than blocking.
 
-**The `.npz` files are canonical.** The `.txt` copies use `%f` for angles, which
-quantises RA/Dec at 0.206″ against a 0.7″ noise model. They are for eyeballing
-only; nothing reads them back.
+**Stage 1's `.txt` files are canonical.** They are written at full precision and
+read back exactly, and `generated_data_gcrs_settings.json` holds what rows cannot.
+From stage 2 on, the `.npz` files are canonical and the `.txt` copies are for
+eyeballing only, because they use `%f`.
 
-**Changing the orbit family means changing two places.** `new_data_gen.py`'s
-`test_case` and `range_bounds.py`'s `A_MIN`/`A_MAX`/`E_MAX` must agree. Only
-test case `'a'` matches the current bounds; `'b'`–`'d'` push eccentricity past
-`E_MAX = 0.01`.
+**The orbit family is set in one place.** `gcrs_data_generation.py`'s
+`test_case` is recorded in the settings file, and `population_for()` reads the
+bounds from there.
 
 ## Known rough edges
 
@@ -124,15 +133,15 @@ test case `'a'` matches the current bounds; `'b'`–`'d'` push eccentricity past
   into a decision. This is the obvious next piece of work.
 - **Objects are independent random draws**, not deliberately similar orbits, so
   the false-pair test is easier than the paper's hard case.
-- **Only the 0.7″ noise case exists.** The paper tests 0.7″, 1.2″ and 2.0″.
 - **RA uncertainty is not divided by cos(δ)** in either the generator or the
   fitter. They are self-consistent, so nothing is wrong, but it diverges from
   standard astrometric convention if comparing to the paper's numbers directly.
-- **`src/lab/data/data_generation.py` is dead.** The superseded original
-  generator, kept for reference. Not a pipeline stage.
-- **One true pair sometimes converges on the wrong `k`.** The 24 h-separated
-  pair has landed on `k=0.5` with a loss orders of magnitude worse than its
-  siblings. Possibly a local minimum or a `k`-grid issue; uninvestigated.
+- **Files prefixed `stale_` in `src/lab/data/` are dead.** Superseded generators,
+  kept for reference. Not pipeline stages.
+- **Stage 8 misses some true pairs.** In run `1a780a3618b7`, 15 of 100 true pairs
+  failed: 5 at the 1e+12 penalty and 10 on the wrong `k`. All score near zero at
+  the true ranges and `k`, so the data is correct and the failure is in Search; the
+  cause is uninvestigated.
 
 ## Note on this file
 

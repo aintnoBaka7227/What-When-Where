@@ -1,35 +1,29 @@
 
 import numpy as np
 
+from lab.data.dataset import VARIANTS, data_file, load_data, uncertainties_arcsec
 from lab.paths import DATA_DIR
 from lab.observation.fit_attributes import fit_attributes
 
 
-# src/lab/data/new_data_gen.py writes its clean and noisy datasets together from
-# one orbit, one set of stations and one set of observation epochs. The only
-# columns that differ between them are the measured RA/Dec pair, so both are
-# fitted here by the same code with the same tracklet grouping, and the two
-# sets of attributables stay directly comparable row for row.
+# All chains come from one set of orbits, stations and observation epochs. The
+# only columns that differ between them are the measured RA/Dec pair, so each
+# is fitted here by the same code with the same tracklet grouping, and their
+# attributables stay directly comparable row for row.
 #
-# Each entry is (label, generated data, attributables npz, attributables txt).
-DATASETS = (
+# Each entry is (label, attributables npz, attributables txt).
+DATASETS = tuple(
     (
-        "clean",
-        DATA_DIR / "generated_data_clean.npz",
-        DATA_DIR / "generated_attributables_clean.npz",
-        DATA_DIR / "generated_attributables_clean.txt",
-    ),
-    (
-        "noisy",
-        DATA_DIR / "generated_data_noisy.npz",
-        DATA_DIR / "generated_attributables_noisy.npz",
-        DATA_DIR / "generated_attributables_noisy.txt",
-    ),
+        variant,
+        DATA_DIR / f"generated_attributables_{variant}.npz",
+        DATA_DIR / f"generated_attributables_{variant}.txt",
+    )
+    for variant in VARIANTS
 )
 
 
 def build_attributables(
-    generated_data_file,
+    variant,
     attributables_npz_file,
     attributables_txt_file,
 ):
@@ -37,8 +31,8 @@ def build_attributables(
 
     Parameters
     ----------
-    generated_data_file : Path
-        A src/lab/data/new_data_gen.py dataset, clean or noisy.
+    variant : str
+        The dataset chain to fit, one of VARIANTS.
 
     attributables_npz_file : Path
         Destination for the machine-readable attributables.
@@ -48,16 +42,14 @@ def build_attributables(
     """
     # Load the simulated observations and their angular-error settings.
     #
-    # The input data matrix is created by src/lab/data/new_data_gen.py. The
+    # The input data matrix is created by src/lab/data/gcrs_data_generation.py. The
     # columns used here are:
     #   6  = measured right ascension, alpha (rad)
     #   7  = measured declination, delta (rad)
     #   14 = observation time (s)
     #   15 = tracklet ID
     #   16 = object ID
-    generated = np.load(generated_data_file)
-
-    data = generated["data"]
+    data = load_data(variant)
 
     # Relative error represents point-to-point scatter inside a tracklet.
     # Systematic error represents a common angular offset for the tracklet.
@@ -68,8 +60,7 @@ def build_attributables(
     # Its fitted attributables are still exact, but every covariance it
     # produces is the zero matrix, so the clean file cannot be used by stages
     # that invert Ca.
-    relative_error = generated["relative_uncertainty_arcsec"]
-    systematic_error = generated["systematic_uncertainty_arcsec"]
+    relative_error, systematic_error = uncertainties_arcsec(variant)
 
     # IDs are stored in the numeric data matrix, so cast them back to integers.
     object_ids = data[:, 16].astype(int)
@@ -171,17 +162,16 @@ def build_attributables(
 
 
 def main():
-    """Fit attributables for both the clean and the noisy dataset."""
-    for label, data_file, npz_file, txt_file in DATASETS:
-        # Each dataset is optional: generating only one of the pair, or
-        # deleting one to regenerate it, should not stop the other from
-        # being fitted.
-        if not data_file.exists():
-            print(f"Skipping {label}: {data_file} does not exist")
+    """Fit attributables for every dataset chain."""
+    for label, npz_file, txt_file in DATASETS:
+        # Each dataset is optional: deleting one to regenerate it should not
+        # stop the others from being fitted.
+        if not data_file(label).exists():
+            print(f"Skipping {label}: {data_file(label)} does not exist")
             continue
 
         tracklet_count = build_attributables(
-            data_file,
+            label,
             npz_file,
             txt_file,
         )
