@@ -14,3 +14,6 @@ wheels/
 
 # Experiment runs and figures
 results/
+
+# Stages run by hand write here; runs write to results/
+data/

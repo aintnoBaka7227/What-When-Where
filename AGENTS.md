@@ -90,7 +90,7 @@ These were checked by running the code, not by reading it:
   to ~1e-10 relative.
 - **Stations are real rotating-Earth sites.** `|v| = ω·r_eq` to 0.24%,
   `v · r = 3e-13`, radius ~6375 km.
-- **Every object is observable.** Elevation stays between 49° and 89° by
+- **Every object is observable.** Elevation stays above about 37° by
   construction — the station is placed within 45° of the sub-satellite point.
 - **Both chains fully separate true from false pairs** on a four-object dataset.
 
@@ -138,7 +138,7 @@ bounds from there.
   standard astrometric convention if comparing to the paper's numbers directly.
 - **Files prefixed `stale_` in `src/lab/data/` are dead.** Superseded generators,
   kept for reference. Not pipeline stages.
-- **Stage 8 misses some true pairs.** In run `1a780a3618b7`, 15 of 100 true pairs
+- **Stage 8 misses some true pairs.** In run `cdfe67c70d10`, 15 of 100 true pairs
   failed: 5 at the 1e+12 penalty and 10 on the wrong `k`. All score near zero at
   the true ranges and `k`, so the data is correct and the failure is in Search; the
   cause is uninvestigated.

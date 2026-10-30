@@ -324,16 +324,18 @@ than propagating, so the optimiser can walk out of infeasible regions.
 ## Current status
 
 All eight stages run end to end on all four chains. On a 10-object GCRS dataset
-(50 tracklets, 1,225 pairs), run `1a780a3618b7`:
+(50 tracklets, 1,225 pairs), with inclination 0–20°, run `cdfe67c70d10`:
 
-| chain | best false pair | true pairs at or above it | false pairs at the penalty value |
-|---|---|---|---|
-| clean | 2.00e+01 | 15 of 100 | 52 |
-| noisy_0.7as | 1.61e+05 | 15 of 100 | 52 |
-| noisy_1.2as | 5.46e+04 | 15 of 100 | 52 |
-| noisy_2.0as | 1.95e+04 | 15 of 100 | 52 |
+| chain | best false pair | true pairs at or above it | best threshold | missed true | accepted false |
+|---|---|---|---|---|---|
+| clean | 9.68e−02 | 15 of 100 | 1.6e−05 | 15 | 0 |
+| noisy_0.7as | 8.05e+02 | 15 of 100 | 10.9 | 15 | 0 |
+| noisy_1.2as | 2.79e+02 | 15 of 100 | 10.6 | 15 | 0 |
+| noisy_2.0as | 1.03e+02 | 15 of 100 | 10.4 | 15 | 0 |
 
-The 15 failures are a Search problem. All 100 true pairs score at most 2.1e−05 at
+The thresholds were chosen on this same data, so they are not validated.
+
+The 15 failures are a Search problem. All 100 true pairs score at most 2.5e−10 at
 their true ranges and `k` on the clean chain. In 5 failures, the only `k` tried
 returns the 1e+12 penalty; in the other 10, Search chooses the wrong `k`. Only 1 of
 the 15 is within 5° of 0°/180°, so degeneracy is not the main cause.

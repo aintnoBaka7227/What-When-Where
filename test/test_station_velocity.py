@@ -25,23 +25,27 @@ check compares astropy's velocity against something derived independently:
   4. Use in Eq. (6)      Topocentric RA/Dec rates built from v_site match the
                          finite-difference rates of the observed angles, and
                          would not match without it.
-  5. Generated data      The same physical checks on the rows in data/, if a
-                         dataset has been generated.
+  5. Generated data      The same physical checks on rows from the generator,
+                         written to a temporary folder.
 
 Edge cases: stations at the poles (speed ~0), the equator (maximum speed),
 the antimeridian, an elevated station, the geocentre, a time step across the
 2012-06-30 leap second, and a full sidereal day of rotation.
 """
 
+import tempfile
+from pathlib import Path
 
 import numpy as np
 import astropy.units as u
 from astropy.coordinates import EarthLocation
 from astropy.time import Time
 
-from lab.paths import DATA_DIR, PROJECT_ROOT
+import lab.paths
+from lab.data.dataset import load_data
 from lab.data.gcrs_data_generation import (
     fix_station_to_earth,
+    generate_object,
     station_gcrs_state,
     two_body,
     mu as MU,
@@ -82,12 +86,6 @@ FD_REL_TOL = 1.0e-6
 # 0.17 deg in 2012, so the direction check against omega_E z-hat x r allows
 # 0.5 deg. A reversed or rotated velocity is off by tens of degrees or 180.
 DIRECTION_TOL_DEG = 0.5
-
-DATA_FILE = DATA_DIR / "generated_data_gcrs_clean.txt"
-
-
-class Skip(Exception):
-    """Raised by a test whose inputs are not available."""
 
 
 # ----------------------------------------------------------------------------
@@ -391,12 +389,17 @@ def test_full_sidereal_day_returns_station_to_start():
 # ----------------------------------------------------------------------------
 
 def test_generated_data_station_velocity():
-    if not DATA_FILE.exists():
-        raise Skip(f"{DATA_FILE.relative_to(PROJECT_ROOT)} not found; run the generator first")
+    original = lab.paths.DATA_DIR
+    with tempfile.TemporaryDirectory() as folder:
+        lab.paths.DATA_DIR = Path(folder)
+        try:
+            generate_object()
+            data = load_data("clean")
+        finally:
+            lab.paths.DATA_DIR = original
 
-    data = np.loadtxt(DATA_FILE, delimiter=",", ndmin=2)
     assert data.shape[1] == NUM_OF_OUTPUT_COLUMNS, (
-        f"{DATA_FILE.name} has {data.shape[1]} columns, expected {NUM_OF_OUTPUT_COLUMNS}"
+        f"data has {data.shape[1]} columns, expected {NUM_OF_OUTPUT_COLUMNS}"
     )
 
     r_site, v_site, time = data[:, 8:11], data[:, 11:14], data[:, 14]
@@ -455,16 +458,12 @@ TESTS = [
 
 def main():
     passed = 0
-    skipped = 0
     failed = []
 
     for test in TESTS:
         name = test.__name__
         try:
             test()
-        except Skip as exc:
-            skipped += 1
-            print(f"  skip  {name}\n          {exc}")
         except AssertionError as exc:
             failed.append(name)
             print(f"  FAIL  {name}\n          {exc}")
@@ -476,7 +475,7 @@ def main():
             print(f"  pass  {name}")
 
     print()
-    print(f"{passed}/{len(TESTS)} passed" + (f", {skipped} skipped" if skipped else ""))
+    print(f"{passed}/{len(TESTS)} passed")
 
     return 1 if failed else 0
 

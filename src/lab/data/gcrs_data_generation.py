@@ -572,6 +572,7 @@ def radec_to_point(radec):
     return point
 
 NEAR_GEO_ORBIT_RANGE_A = [38000, 45000]  # km
+NEAR_GEO_INCLINATION_RANGE_DEG = [0.0, 20.0]  # deg
 
 # Output row layout. Columns 0-16 match stale_new_data_gen.py's dataset layout;
 # column 17 is an extra per-observation ID.
@@ -732,6 +733,7 @@ def generate_object(test_case='a'):
     # orbit, stations and biases, so a dataset can be described and audited.
     # All outputs go to the data folder.
     settings_output = settings_file()
+    settings_output.parent.mkdir(parents=True, exist_ok=True)
 
     # Output files. The script opens these in append mode later, so repeated
     # runs add rows instead of replacing old rows. All files are written from
@@ -776,7 +778,7 @@ def generate_object(test_case='a'):
         e = rng.uniform(*eccentricity_ranges['a'])
         coe_oe = np.array([rng.uniform(a_min * (1 - e), a_max * (1 - e)),
                         e, #e
-                        rng.uniform(np.deg2rad(1), np.deg2rad(179)), #i
+                        rng.uniform(*np.deg2rad(NEAR_GEO_INCLINATION_RANGE_DEG)), #i
                         rng.uniform(0, 2 * np.pi), #ohm
                         rng.uniform(0, 2 * np.pi), #omega
                         rng.uniform(0, 2 * np.pi)]) #v
@@ -785,7 +787,7 @@ def generate_object(test_case='a'):
         e = rng.uniform(*eccentricity_ranges['b'])
         coe_oe = np.array([rng.uniform(a_min * (1 - e), a_max * (1 - e)),
                         e,  # e
-                        rng.uniform(np.deg2rad(1), np.deg2rad(179)),  # i
+                        rng.uniform(*np.deg2rad(NEAR_GEO_INCLINATION_RANGE_DEG)),  # i
                         rng.uniform(0, 2 * np.pi),  # ohm
                         rng.uniform(0, 2 * np.pi),  # omega
                         rng.uniform(0, 2 * np.pi)])  # v
@@ -794,7 +796,7 @@ def generate_object(test_case='a'):
         e = rng.uniform(*eccentricity_ranges['c'])
         coe_oe = np.array([rng.uniform(a_min * (1 - e), a_max * (1 - e)),
                         e,  # e
-                        rng.uniform(np.deg2rad(1), np.deg2rad(179)),  # i
+                        rng.uniform(*np.deg2rad(NEAR_GEO_INCLINATION_RANGE_DEG)),  # i
                         rng.uniform(0, 2 * np.pi),  # ohm
                         rng.uniform(0, 2 * np.pi),  # omega
                         rng.uniform(0, 2 * np.pi)])  # v
@@ -803,7 +805,7 @@ def generate_object(test_case='a'):
         e = rng.uniform(*eccentricity_ranges['d'])
         coe_oe = np.array([rng.uniform(a_min * (1 - e), a_max * (1 - e)),
                         e,  # e
-                        rng.uniform(np.deg2rad(1), np.deg2rad(179)),  # i
+                        rng.uniform(*np.deg2rad(NEAR_GEO_INCLINATION_RANGE_DEG)),  # i
                         rng.uniform(0, 2 * np.pi),  # ohm
                         rng.uniform(0, 2 * np.pi),  # omega
                         rng.uniform(0, 2 * np.pi)])  # v
@@ -864,7 +866,7 @@ def generate_object(test_case='a'):
         'test_case': test_case,
         'semi_major_axis_range_km': [a_min, a_max],
         'eccentricity_range': eccentricity_ranges[test_case],
-        'inclination_range_deg': [1.0, 179.0],
+        'inclination_range_deg': NEAR_GEO_INCLINATION_RANGE_DEG,
         'station_max_offset_from_subsatellite_deg': 45.0,
         'num_of_tracklets_per_object': num_of_sites,
         'tracklet_schedule_h': tracklet_schedule_h,
@@ -957,13 +959,15 @@ def generate_object(test_case='a'):
                 # in this site window.
                 rsite = rv[0, 0:3] / np.linalg.norm(rv[0, 0:3])
 
-                # Pick a random axis, normalize it, then rotate the radial
-                # direction by up to 45 degrees.
+                # Pick a random axis perpendicular to the radial direction, so
+                # that rotating about it moves the station by exactly rot_angle.
+                # An axis at any other angle moves it by less.
                 rot_axis = np.array([
                     rng.uniform(-1, 1),
                     rng.uniform(-1, 1),
                     rng.uniform(-1, 1),
                 ])
+                rot_axis = rot_axis - np.dot(rot_axis, rsite) * rsite
                 rot_axis = rot_axis / np.linalg.norm(rot_axis)
                 rot_angle = rng.uniform(0, np.pi / 4)
 

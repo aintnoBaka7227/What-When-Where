@@ -27,8 +27,9 @@ responsibility; stage numbers [1]–[8] are the execution order used in
 | Code lives in `src/lab/<phase>/`, one directory per phase | The directory says what a module is responsible for. Decision has no directory until it has code. |
 | `lab` is an installed package, and modules import as `lab.<phase>.<module>` | Replaces per-script `sys.path` edits. `uv sync` installs it in editable mode. |
 | Stage scripts run by file path | `src/lab/runner.py` runs each one as a separate process, so a failure stays isolated. |
-| Run outputs go in `results/`, other generated data in `data/` | `src/` holds only code. `src/lab/paths.py` defines these locations. |
-| Tests go in `test/` | One place for all suites. |
+| Run outputs go in `results/`, and stages run by hand write to the untracked `data/` | `src/` holds only code. `src/lab/paths.py` defines these locations. |
+| Tests go in `test/` | One place for all suites. Generator tests use a temporary folder, so they need no tracked data. |
+| No generated data is tracked in Git | Every dataset is reproducible from its config, and runs keep their own. |
 | `range_bounds.py` remains the file registry | Moved unchanged in role. `create_attributes_vector.py` still keeps its own list, so stage 2 does not depend on stage 3. |
 
 ### Experiments and results
@@ -109,7 +110,7 @@ Each run generates one object:
 | `mu` | astropy `GM_earth`, in km³/s² | Same source as `src/lab/model/build_orbit.py` and `src/lab/scoring/discriminator_loss.py`. |
 | Semi-major axis | 38,000–45,000 km | The bounds the paper uses for its association tests (Section 6.2). |
 | Eccentricity | 0–0.01 (test case `'a'`) | Near-circular. Cases `'b'`–`'d'` exceed `E_MAX = 0.01` in `src/lab/hypothesis/range_bounds.py`. |
-| Inclination | 1–179° | Avoids the equatorial singularity in the classical elements. Wider than a near-GEO population; see [Open issues](#open-issues). |
+| Inclination | 0–20° | A near-GEO population, as in the paper. Orbits this similar make false pairs harder to reject. The elements are converted through equinoctial form, which has no singularity at 0°. |
 | RAAN, argument of perigee, true anomaly | Uniform on 0–2π | No preferred geometry. |
 | Epoch | 2012-08-18T22:59:08 UTC | First frame in Table 2. |
 
@@ -135,7 +136,7 @@ The total span of about 53 h, plus the offset, is longer than the ~27 h of the p
 | Decision | Value | Reason |
 | --- | --- | --- |
 | Stations | One new random station per tracklet | Guarantees every tracklet is observable without modelling a real site's visibility windows. The paper's data comes from a single telescope. |
-| Placement | Sub-satellite direction rotated by up to 45° about a random axis | Keeps the object high in the sky. The lowest possible elevation is ~37°; the committed object ranges from 52.8° to 89.5°. |
+| Placement | Sub-satellite direction rotated by up to 45° about a random perpendicular axis | Keeps the object high in the sky, and makes the rotation angle the true offset. The lowest possible elevation is ~37°. |
 | Radius | `R_earth` sphere, then attached to ITRS | The station is a geocentric point, so its height above the WGS84 ellipsoid varies (e.g. +7 km). This has no effect on the geometry the pipeline uses. |
 | Earth attachment | GCRS → ITRS once at the first observation (`fix_station_to_earth`) | The station then stays on the same patch of ground for the whole tracklet. |
 | Station state | `EarthLocation.get_gcrs_posvel` at every observation (`station_gcrs_state`) | Includes Earth rotation, precession, nutation and polar motion, and supplies the velocity for Eq. (6). |
@@ -153,12 +154,12 @@ and refraction are not modelled.
 | Systematic noise | 5″ | Section 6.1. |
 | Systematic draw | Once per tracklet, for RA and Dec separately | Section 6 describes an exposure-epoch offset, which stays constant across a tracklet. The model applies it as an angle bias rather than a timing error. |
 | Shared unit draws | Noise is drawn once and scaled to each level | Files differ only in noise amplitude, so a change in results between levels comes from sigma rather than chance. |
-| RA noise | Not divided by `cos(dec)` | Matches the fitter. On-sky RA noise therefore shrinks at high declination. |
+| RA noise | Not divided by `cos(dec)` | Matches the fitter. With declination below about 20°, on-sky RA noise is at most about 6% smaller than intended. |
 | RA wrap | `% 2π` after noise | Keeps RA in 0–2π. `src/lab/observation/fit_attributes.py` unwraps it before fitting. |
 
 ### Output files
 
-All files are in `data/`.
+All files are in the run's `output/` folder, or `data/` if the script is run by hand.
 
 | File | Contents |
 | --- | --- |
@@ -197,23 +198,14 @@ a dataset being silently corrupted:
   if the record's object count differs from the data. Because the record is
   written last, this also catches a run that crashed partway.
 
-To reset, delete all `data/generated_data_gcrs_*` files.
+Run scripts start each dataset empty. To reset a dataset made by hand, delete
+`data/generated_data_gcrs_*`.
 
 ### Open issues
 
 **Degenerate pairs cannot be removed completely.** Every time gap is degenerate
 for some orbital period. Randomised spacing limits how many pairs one object can
 lose, and a flag on near-0°/180° pairs belongs in the Search stage.
-
-**Recorded station offset is not the true offset.** The rotation axis is not
-perpendicular to the sub-satellite direction, so the true separation is at most
-the rotation angle. `station_offset_from_subsatellite_deg` stores the rotation
-angle: tracklet 0 records 36.39° where the true separation is 16.10°. Under this
-sampling the true separation has a median of 16.7° and a 95th percentile of 37.9°.
-The 45° limit still holds. 
-
-**Inclination is not near-GEO.** The 1–179° range includes polar and retrograde
-orbits, which are easier to separate than the paper's population.
 
 **Objects are independent draws**, so false pairs are easier than the paper's
 hard case of similar orbits.
