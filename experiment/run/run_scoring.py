@@ -11,7 +11,15 @@ import numpy as np
 
 import lab.paths
 import run_hypothesis
-from lab.data.dataset import VARIANTS, load_data
+from lab.data.dataset import (
+    OBJECT_ID_COLUMN,
+    SATELLITE_POSITION,
+    SITE_POSITION,
+    TIME_COLUMN,
+    TRACKLET_ID_COLUMN,
+    VARIANTS,
+    load_data,
+)
 from lab.runner import execute, stage_parser, write_metrics
 
 
@@ -22,24 +30,18 @@ def _pair_tag(pair):
 
 
 def _truth_ranges(data, pair):
-    """Exact (rho_1_true, rho_2_true) for the pair, from the synthetic truth.
-
-    Each tracklet has 5 measurements 20 s apart and its attributable epoch
-    t0 is their mean -- i.e. the 3rd measurement lands exactly on t0. So the
-    true geocentric object position at t0 is a stored row, no propagation
-    needed: rho_i_true = || r_object(t0) - r_site(t0) ||. Columns of the
-    generated-data matrix: 0:3 object position (noise-free), 8:11 site
-    position, 14 time, 15 tracklet id, 16 object id.
-    """
-    oid, tid, tcol = data[:, 16].astype(int), data[:, 15].astype(int), data[:, 14]
+    """True (rho_1, rho_2). t0 is the middle observation, so it is a stored row."""
+    oid = data[:, OBJECT_ID_COLUMN].astype(int)
+    tid = data[:, TRACKLET_ID_COLUMN].astype(int)
+    tcol = data[:, TIME_COLUMN]
     out = []
-    # args_1[3] / args_2[3] is t0 for each tracklet (see the unpack below).
+    # args_i[3] is t0.
     for obj, trk, t0 in (
         (pair["object_1"], pair["tracklet_1"], pair["args_1"][3]),
         (pair["object_2"], pair["tracklet_2"], pair["args_2"][3]),
     ):
         row = data[(oid == obj) & (tid == trk) & np.isclose(tcol, t0)][0]
-        out.append(float(np.linalg.norm(row[0:3] - row[8:11])))
+        out.append(float(np.linalg.norm(row[SATELLITE_POSITION] - row[SITE_POSITION])))
     return out
 
 
@@ -52,15 +54,12 @@ def compute_loss_surface(pair, data, variant, n, unweighted):
     from lab.scoring.discriminator_loss import discriminator_loss, discriminator_loss_unweighted
     from lab.model.lambert import LambertNoSolution
 
-    # The clean chain has zero measurement covariance, so the weighted loss
-    # (Eq. 18) would invert a singular matrix -- it MUST use the unweighted
-    # form, same rule as optimise_hypothesis's LOSS_FUNCTIONS. On the noisy
-    # chain --unweighted is an optional speed-up (skips the Eq. 19 Jacobian).
+    # Clean must be unweighted (zero Ca). On noisy chains it is an optional
+    # speed-up that skips the Eq. (19) Jacobian.
     unweighted = unweighted or variant == "clean"
 
-    # args_i tuple layout (from _pair_inputs): (c_i, r_s_i, v_s_i, t0_i,
-    # (rho_min_i, rho_max_i), attributable_i, Ca_i). The bounds are the
-    # admissible region C (Eq. 22) -- the surface spans exactly that box.
+    # args_i = (c, r_s, v_s, t0, (rho_min, rho_max), attributable, Ca). The
+    # surface spans the admissible box C (Eq. 22).
     grid_k = pair["k_grid"]
     (c1, rs1, vs1, tt1, (r1lo, r1hi), att1, ca1) = pair["args_1"]
     (c2, rs2, vs2, tt2, (r2lo, r2hi), att2, ca2) = pair["args_2"]
@@ -69,12 +68,7 @@ def compute_loss_surface(pair, data, variant, n, unweighted):
     r2 = np.linspace(r2lo, r2hi, n)   # rho_2 grid axis (plot y)
 
     def loss_at(p1, p2, k):
-        """L(p, k) at one grid point; NaN where no Lambert transfer exists.
-
-        discriminator_loss / _unweighted return one value per Lambert
-        candidate (the vacant-focus pair for M > 0); the surface takes the
-        best, matching optimise_hypothesis's min() over candidates.
-        """
+        """L(p, k), the best candidate as in Search; NaN where infeasible."""
         try:
             if unweighted:
                 vals = discriminator_loss_unweighted(
@@ -86,17 +80,13 @@ def compute_loss_surface(pair, data, variant, n, unweighted):
         except LambertNoSolution:
             return np.nan
 
-    # One L grid per k. Z[i, j] = loss at (rho_1 = r1[j], rho_2 = r2[i]),
-    # i.e. rows index rho_2 and columns rho_1 -- the layout pcolormesh(x, y, C)
-    # expects for C shaped (len(y), len(x)).
+    # One grid per k, rows rho_2 and columns rho_1, as pcolormesh expects.
     surfaces = np.array([
         [[loss_at(a, b, k) for a in r1] for b in r2] for k in grid_k
     ])
 
-    # Overlay points: the Eq. (31) circular-orbit seed the optimiser starts
-    # from, and where L-BFGS-B actually ended. Both can fail to exist for a
-    # given k (a(k) outside [a_min, a_max]); circular_orbit_initial_guess and
-    # optimize_hypothesis raise ValueError in that case, stored here as NaN.
+    # The Eq. (31) seed and the search's end point per k; NaN where a(k) is
+    # outside the population.
     seeds = np.full((len(grid_k), 2), np.nan)
     optima = np.full((len(grid_k), 2), np.nan)
     for index, k in enumerate(grid_k):
@@ -136,8 +126,7 @@ def run(parent, variant="noisy_0.7as", n=55, unweighted=False, pair=None, pairs=
     }
 
     def body(tee, output_dir, config):
-        # The stage modules read their file locations from lab.paths when first
-        # imported, so point it at this run before importing them.
+        # Stage paths read DATA_DIR when indexed, so import order is irrelevant.
         lab.paths.DATA_DIR = output_dir
         from lab.evaluation.metrics import scoring_metrics
         from lab.evaluation.validate_optimiser import _pair_inputs

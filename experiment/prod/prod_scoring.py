@@ -28,13 +28,12 @@ def plot_surface(surface, out_path):
     rho1_true, rho2_true = surface["truth"]
     variant, tag = str(surface["variant"]), str(surface["tag"])
 
-    # One panel per k, side by side. Each gets its own colourbar because the
-    # panel holding the minimum spans several orders of magnitude while the
-    # others are near-flat plateaus -- a shared scale would wash it out.
+    # One panel per k, each with its own colourbar: a shared scale would flatten
+    # the panel holding the minimum.
     fig, axes = plt.subplots(1, len(grid_k), figsize=(4.6 * len(grid_k), 4.4),
                              squeeze=False)
     for index, (ax, k) in enumerate(zip(axes[0], grid_k)):
-        # Ranges drawn in 10^4 km to match the paper's axes.
+        # 10^4 km, as in the paper.
         im = ax.pcolormesh(r1 / 1e4, r2 / 1e4, np.log10(surface["loss"][index]),
                            shading="auto", cmap="Greys_r")
         fig.colorbar(im, ax=ax, label=r"$\log_{10} L(\mathbf{p})$")
@@ -59,17 +58,10 @@ def plot_surface(surface, out_path):
 
 
 def figure7(args):
-    """Reproduce Siminski et al. Fig. 7 for this pipeline.
+    """Siminski et al. Fig. 7: log L over (rho_1, rho_2), one panel per k.
 
-    Fig. 7 is the boundary-value loss L(p, k) for ONE tracklet pair, drawn as
-    a heatmap over the range hypothesis p = (rho_1, rho_2), with one panel per
-    k in the pair's admissible grid. The paper's point: unlike the
-    initial-value method, each fixed-k slice has a single minimum, and the
-    overall solution is the k whose minimum is lowest.
-
-    Markers: the true (rho_1, rho_2) from the synthetic truth, the Eq. (31)
-    circular-orbit seed, and the optimiser's result at that k. One figure is
-    written for each surface in the run.
+    Marks the truth, the Eq. (31) seed and the search's result. One figure
+    per saved surface.
     """
     output_dir = load_run(args.hash, "scoring")
     out_dir = figure_dir(args.hash)

@@ -1,30 +1,35 @@
-"""Validation suite for src/lab/scoring/discriminator_loss.py.
-
-Run directly:
+"""Tests for src/lab/scoring/discriminator_loss.py.
 
     uv run python test/test_discriminator_loss.py
 
-Self-contained: the two-tracklet geometry is built here from a known orbit,
-so nothing depends on the pipeline having been run or on any .npz file
-existing.
+A wrong loss still returns plausible numbers, so most tests are identities
+that hold at any feasible point:
 
-The loss is the one place the method can be wrong without anything crashing
--- a mis-transposed covariance or a dropped factor still returns plausible
-numbers. So most of these are algebraic identities the loss must satisfy
-regardless of geometry:
+    scaling      Ca -> s Ca gives L -> L / s
+    reduction    C = c I gives L = |residual|^2 / c
+    agreement    an independent solve() recomputation matches
+    units        the unweighted loss is |residual|^2 * 206265^2
 
-    scaling      Ca -> s*Ca must give L -> L/s
-    reduction    C = c*I must give L = |residual|^2 / c
-    agreement    an independent solve() must match the inv() in the module
-    units        the unweighted loss must be |residual|^2 * 206265^2
+Then the two departures from the printed paper and the generated data:
 
-None of these depend on knowing the "right" answer for a hypothesis, which
-is what makes them usable: a wrong loss fails them, a merely imprecise one
-does not.
+    Eq. (19)     J C_z J^T matches a Monte Carlo covariance; J^T C_z J does not
+    calibration  at the truth, clean L ~ 0 and noisy L ~ chi-squared(4)
+    contrast     moving off the truth raises L
 """
 
 
+import sys
+from itertools import combinations
+from pathlib import Path
+
 import numpy as np
+
+sys.path.insert(0, str(Path(__file__).parent))
+from pipeline_fixture import pipeline  # noqa: E402
+from lab.data.dataset import NOISY_VARIANTS, VARIANTS  # noqa: E402
+from lab.evaluation.metrics import true_k  # noqa: E402
+from lab.model.lambert import LambertNoSolution  # noqa: E402
+from lab.scoring.discriminator_loss import z_hat_dot_candidates_from_z  # noqa: E402
 
 from lab.scoring.discriminator_loss import (
     MU,
@@ -48,11 +53,9 @@ EARTH_RADIUS_KM = 6378.137
 
 
 def build_geometry():
-    """A feasible two-tracklet hypothesis, built from a known near-GEO orbit.
+    """A feasible two-tracklet hypothesis from a known near-GEO orbit.
 
-    Returns everything the loss functions need, plus the true ranges and a
-    k that admits a Lambert solution. The hypothesis does not have to be a
-    good one -- the identities tested here hold at any feasible point.
+    The identities hold at any feasible point, so it need not be a good one.
     """
     a = 42164.0
     inclination = np.deg2rad(15.0)
@@ -111,11 +114,9 @@ def build_geometry():
 
 
 def realistic_covariance(relative_arcsec=0.7, systematic_arcsec=5.0):
-    """An attributable covariance shaped like fit_attributes() produces.
+    """A Ca shaped like fit_attributes(): systematic term on the angles only.
 
-    Angle variances carry the systematic term, rate variances do not, and
-    the angle-rate off-diagonals are non-zero -- which matters, because a
-    diagonal Ca would hide a transpose error.
+    Non-zero angle-rate terms, since a diagonal Ca would hide a transpose error.
     """
     sigma_relative = np.deg2rad(relative_arcsec / 3600.0)
     sigma_systematic = np.deg2rad(systematic_arcsec / 3600.0)
@@ -186,11 +187,7 @@ def test_covariance_sub_blocks():
 # --------------------------------------------------------------------------
 
 def test_weighted_loss_matches_an_independent_computation():
-    """Rebuild Eq. (18) with solve() instead of inv() and compare.
-
-    Recomputes C_z_hat_dot = J C_z J^T here too, so a transpose error in
-    the module would show up as a disagreement.
-    """
+    """Eq. (18) rebuilt by hand, including J C_z J^T, must match."""
     geometry = build_geometry()
     ca = realistic_covariance()
 
@@ -230,11 +227,9 @@ def test_loss_scales_inversely_with_covariance():
 
 
 def test_identity_covariance_reduces_to_squared_residual():
-    """With C_z = 0 and C_z_dot = c*I, Eq. (18) collapses to |residual|^2 / c.
+    """C_z = 0 and C_z_dot = c I give |residual|^2 / c.
 
-    Zeroing the angle block kills the Eq. (19) term, leaving the weighting
-    entirely to C_z_dot -- so this checks the quadratic form itself,
-    independent of the Jacobian.
+    Zeroing C_z removes the Jacobian term, isolating the quadratic form.
     """
     geometry = build_geometry()
     _, _, residuals = rate_residuals(*loss_arguments(geometry))
@@ -249,12 +244,7 @@ def test_identity_covariance_reduces_to_squared_residual():
 
 
 def test_zero_covariance_makes_the_weighted_loss_singular():
-    """Why discriminator_loss_unweighted exists.
-
-    The clean chain's Ca is the zero matrix, so Eq. (18) would invert a
-    singular matrix. This pins that down rather than leaving it as a
-    remark in a docstring.
-    """
+    """Why the unweighted loss exists: clean's zero Ca makes Eq. (18) singular."""
     geometry = build_geometry()
     zero = np.zeros((4, 4))
 
@@ -334,11 +324,7 @@ def test_evaluate_loss_dispatches_by_variant():
 # --------------------------------------------------------------------------
 
 def test_jacobian_is_stable_under_step_halving():
-    """Halving eps should barely move a converged finite-difference Jacobian.
-
-    A consistency check only -- unlike model_rates.py there is no
-    independent closed form to compare against.
-    """
+    """Halving eps barely moves the Jacobian. There is no closed form to compare with."""
     geometry = build_geometry()
     z, _, _ = rate_residuals(*loss_arguments(geometry))
 
@@ -374,6 +360,104 @@ def test_jacobian_has_one_entry_per_candidate():
 
 
 # --------------------------------------------------------------------------
+# Eq. (19): the covariance propagation, checked by Monte Carlo
+# --------------------------------------------------------------------------
+
+def test_jacobian_propagation_matches_monte_carlo():
+    """Sample z ~ N(z, C_z); the covariance of z_hat_dot must match J C_z J^T.
+
+    Uses only the forward model. The printed J^T C_z J must disagree by more
+    than sampling error.
+    """
+    g = build_geometry()
+    ca = realistic_covariance()
+    z, _, _ = rate_residuals(*loss_arguments(g))
+    c_z = measured_z_covariance(ca, ca)
+    args = (g["rho_1"], g["rho_2"], g["k"], g["r_s1"], g["v_s1"], g["t1"],
+            g["r_s2"], g["v_s2"], g["t2"])
+
+    jacobian = z_hat_dot_jacobian(z, *args)[0]
+    coded = jacobian @ c_z @ jacobian.T
+    printed = jacobian.T @ c_z @ jacobian
+
+    rng = np.random.default_rng(11)
+    samples = np.array([
+        z_hat_dot_candidates_from_z(rng.multivariate_normal(z, c_z), *args)[0]
+        for _ in range(3000)
+    ])
+    sampled = np.cov(samples, rowvar=False)
+
+    scale = np.max(np.abs(sampled))
+    coded_error = np.max(np.abs(coded - sampled)) / scale
+    printed_error = np.max(np.abs(printed - sampled)) / scale
+
+    # 3000 samples: covariance entries carry about sqrt(2/3000) = 3% noise.
+    assert coded_error < 0.1, coded_error
+    assert printed_error > 3 * coded_error, (coded_error, printed_error)
+
+
+# --------------------------------------------------------------------------
+# on the generator's data: the loss at the truth
+# --------------------------------------------------------------------------
+
+def _true_pair_losses(run, variant, rho_offset_km=0.0):
+    """The loss of every same-object pair at its true ranges and true k."""
+    attributables = run.attributables(variant)
+    rows = list(zip(attributables["object_id"], attributables["tracklet_id"]))
+    losses = []
+    for i, j in combinations(range(len(rows)), 2):
+        if rows[i][0] != rows[j][0]:
+            continue
+        t1, r1, v1, r_s1, v_s1 = run.truth_at_epoch(*rows[i])
+        t2, r2, _, r_s2, v_s2 = run.truth_at_epoch(*rows[j])
+        try:
+            values = evaluate_loss(
+                variant,
+                np.linalg.norm(r1 - r_s1) + rho_offset_km, np.linalg.norm(r2 - r_s2),
+                true_k(r1, v1, r2, t2 - t1),
+                r_s1, v_s1, t1, attributables["attributable"][i], attributables["Ca"][i],
+                r_s2, v_s2, t2, attributables["attributable"][j], attributables["Ca"][j],
+            )
+        except LambertNoSolution:
+            # Off the truth a multi-revolution k can become infeasible; Search
+            # scores that as its penalty, so it counts as a high loss here.
+            values = [np.inf]
+        losses.append(min(values))
+    return np.array(losses)
+
+
+def test_clean_loss_is_zero_at_the_truth():
+    """No noise, the true orbit: any residual is a code bug."""
+    with pipeline(num_objects=5, stages=2) as run:
+        losses = _true_pair_losses(run, "clean")
+    assert len(losses) == 50
+    # arcsec^2/s^2. A 1e-3 "/s rate error alone would score 1e-6.
+    assert losses.max() < 1e-6, losses.max()
+
+
+def test_noisy_loss_at_the_truth_is_chi_squared_4():
+    """Section 5.2's claim: L at the truth is chi-squared(4), mean 4.
+
+    Pairs share tracklets, so the band is wide. A missing or misscaled
+    covariance term moves the mean.
+    """
+    with pipeline(num_objects=10, stages=2) as run:
+        for variant in NOISY_VARIANTS:
+            losses = _true_pair_losses(run, variant)
+            assert 2.5 < losses.mean() < 6.0, (variant, losses.mean())
+            # chi-squared(4) exceeds 18.5 one time in 1000.
+            assert np.mean(losses > 18.5) < 0.03, (variant, np.sort(losses)[-5:])
+
+
+def test_loss_rises_away_from_the_truth():
+    with pipeline(num_objects=3, stages=2) as run:
+        for variant in VARIANTS:
+            at_truth = _true_pair_losses(run, variant)
+            offset = _true_pair_losses(run, variant, rho_offset_km=300.0)
+            assert np.median(offset) > 10 * np.median(at_truth), variant
+
+
+# --------------------------------------------------------------------------
 # runner
 # --------------------------------------------------------------------------
 
@@ -389,6 +473,10 @@ TESTS = [
     test_evaluate_loss_dispatches_by_variant,
     test_jacobian_is_stable_under_step_halving,
     test_jacobian_has_one_entry_per_candidate,
+    test_jacobian_propagation_matches_monte_carlo,
+    test_clean_loss_is_zero_at_the_truth,
+    test_noisy_loss_at_the_truth_is_chi_squared_4,
+    test_loss_rises_away_from_the_truth,
 ]
 
 
