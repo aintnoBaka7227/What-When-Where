@@ -1,56 +1,21 @@
-"""Step 1 of validating stage 8: did the L(p, k) minimiser actually converge?
+"""Diagnostic for stage 8: did L-BFGS-B actually descend to each L*?
 
-`optimise_hypothesis.py` reports one number per pair, L*. That number is
-only trustworthy if L-BFGS-B genuinely walked downhill to it. Near a
-half-revolution transfer the loss valley is a narrow trench, the Eq. (31)
-circular seed lands on its wall, and the default L-BFGS-B stopping test can
-declare "converged" after two steps -- thousands of times above the true
-minimum (see AGENTS.md, "One true pair sometimes converges on the wrong k").
+Re-runs every (pair, k) search with a history attached and prints the seed
+loss, final loss, their ratio, iterations, evaluations, the termination
+message and a subsampled best-so-far curve. Flags:
 
-For every tracklet pair and every k in its admissible grid, this re-runs
-the same optimisation `run_association_test` does, but with a `history`
-list attached, and reports:
+    seed infeasible   the Eq. (31) seed has no Lambert solution
+    no step taken     >= 20 evaluations but <= 1 iteration: every line search failed
+    weak descent      a true pair's winning k cut the seed loss by under 20x;
+                      converged true pairs cut it by over 1000x
 
-    L_seed        loss at the Eq. (31) circular-orbit initial guess
-    L_final       loss L-BFGS-B stopped at
-    drop          L_seed / L_final -- how much it actually removed
-    nit / nfev    iterations and function evaluations it took
-    message       L-BFGS-B's own termination reason
-    best-so-far   log10 of the running-minimum loss, subsampled -- the curve
+A flag is not proof of a wrong L*: a false pair or wrong k is flat too.
 
-Per (pair, k), a marker is raised when:
+    uv run python src/lab/evaluation/validate_optimiser.py            # writes the CSV
+    uv run python src/lab/evaluation/validate_optimiser.py --no-csv
 
-    seed infeasible   the circular seed itself has no Lambert solution
-                      (loss pinned at the infeasibility penalty)
-    no step taken     L-BFGS-B ran >= 20 evaluations -- so its gradient said
-                      to move -- but completed <= 1 iteration: every line
-                      search failed (bad scaling / a cliff).
-
-Then, per pair, the k with the lowest L_final is the one stage 8 keeps.
-That winning run is flagged "weak descent" when it is a TRUE pair and the
-search only divided the seed loss by < 20x: every genuinely converged TRUE
-pair in this dataset divides it by > 1000x, so < 20x means L-BFGS-B never
-reached the valley. This is what catches the Object 0 failures.
-
-None of these prove the returned L* is wrong: a genuinely flat region
-(a false pair, or a wrong k) also produces a short, near-horizontal curve,
-and a TRUE pair whose seed already sat in the valley descends little yet
-ends correct. Deciding whether a short curve is a real failure needs the
-truth-range comparison in step 3. This script only shows whether, and how
-far, the optimiser moved.
-
-The per-evaluation trace goes to the data folder, which is the run's output
-folder when `experiment/run/run_evaluation.py` runs this:
-
-    optimiser_history_<variant>.csv
-        (columns pair, object/tracklet ids, is_true, k, eval, rho_1,
-         rho_2, loss) -- for plotting eval-number against log10(L) elsewhere
-
-    uv run python src/lab/evaluation/validate_optimiser.py            # with the CSV
-    uv run python src/lab/evaluation/validate_optimiser.py --no-csv   # terminal only
-
-This does not fix anything; it is a diagnostic you run when a true pair's
-L* looks wrong.
+The CSV, optimiser_history_<variant>.csv in the data folder, has one row per
+evaluation: pair, ids, is_true, k, eval, rho_1, rho_2, loss.
 """
 
 import argparse
@@ -71,11 +36,9 @@ from lab.search.optimise_hypothesis import (
     optimize_hypothesis,
     _INFEASIBLE_PENALTY,
 )
-from lab.paths import DATA_DIR
+import lab.paths
 
-# "No step taken": L-BFGS-B evaluated the objective at least this many times
-# -- its finite-difference gradient told it to move -- yet completed at most
-# this many iterations. Every trial step was rejected.
+# "No step taken": at least this many evaluations, at most this many iterations.
 _NOSTEP_MIN_NFEV = 20
 _NOSTEP_MAX_NIT = 1
 
@@ -182,7 +145,7 @@ def _format_trace(running_min, points=16):
 
 def validate_variant(variant, write_csv=True):
     """Trace and report every optimisation for one dataset chain."""
-    csv_path = DATA_DIR / f"optimiser_history_{variant}.csv" if write_csv else None
+    csv_path = lab.paths.DATA_DIR / f"optimiser_history_{variant}.csv" if write_csv else None
 
     n_runs = 0
     winners = []  # (label, is_true, best_k, best_loss, best_marker)
@@ -258,10 +221,7 @@ def validate_variant(variant, write_csv=True):
                 winners.append((label, pair["is_true"], *best))
 
     def _weak(w):
-        # Winning run barely descended. Every genuinely converged TRUE pair
-        # here divides its seed loss by >1000x; a factor under 20x means the
-        # search never reached the valley. (Only meaningful for TRUE pairs --
-        # a false pair has no valley to reach.)
+        # True pairs only: a false pair has no valley to reach.
         _label, is_true, _k, _loss, marker, _seed, drop, _nit = w
         return is_true and not marker and drop < 20.0
 

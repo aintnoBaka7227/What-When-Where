@@ -20,13 +20,23 @@ import numpy as np
 from astropy.constants import GM_earth
 from scipy import stats
 
-from lab.data.dataset import NOISY_VARIANTS, VARIANTS
+from lab.data.dataset import (
+    DEC_COLUMN,
+    NOISY_VARIANTS,
+    OBJECT_ID_COLUMN,
+    RA_COLUMN,
+    SATELLITE_POSITION,
+    SATELLITE_VELOCITY,
+    SITE_POSITION,
+    TIME_COLUMN,
+    TRACKLET_ID_COLUMN,
+    VARIANTS,
+)
 
-# km^3/s^2, matches the rest of the project.
+# km^3/s^2, as in the generator.
 MU = GM_earth.value / 1_000_000_000.0
 
-# The optimiser's penalty for a hypothesis with no Lambert solution, matching
-# _INFEASIBLE_PENALTY in src/lab/search/optimise_hypothesis.py.
+# optimise_hypothesis._INFEASIBLE_PENALTY.
 INFEASIBLE_PENALTY = 1.0e12
 
 ARCSEC = np.deg2rad(1.0 / 3600.0)
@@ -80,22 +90,25 @@ class Truth:
         """The row at the tracklet's epoch, which is its middle observation."""
         t0 = self.epochs[(object_id, tracklet_id)]
         match = (
-            (self.rows[:, 16] == object_id)
-            & (self.rows[:, 15] == tracklet_id)
-            & np.isclose(self.rows[:, 14], t0)
+            (self.rows[:, OBJECT_ID_COLUMN] == object_id)
+            & (self.rows[:, TRACKLET_ID_COLUMN] == tracklet_id)
+            & np.isclose(self.rows[:, TIME_COLUMN], t0)
         )
         return self.rows[match][0]
 
     def range_km(self, object_id, tracklet_id):
         row = self.row(object_id, tracklet_id)
-        return float(np.linalg.norm(row[:3] - row[8:11]))
+        return float(np.linalg.norm(row[SATELLITE_POSITION] - row[SITE_POSITION]))
 
     def k(self, object_id, tracklet_1, tracklet_2):
         row_1 = self.row(object_id, tracklet_1)
         row_2 = self.row(object_id, tracklet_2)
-        if row_2[14] < row_1[14]:
+        if row_2[TIME_COLUMN] < row_1[TIME_COLUMN]:
             row_1, row_2 = row_2, row_1
-        return true_k(row_1[:3], row_1[3:6], row_2[:3], row_2[14] - row_1[14])
+        return true_k(
+            row_1[SATELLITE_POSITION], row_1[SATELLITE_VELOCITY],
+            row_2[SATELLITE_POSITION], row_2[TIME_COLUMN] - row_1[TIME_COLUMN],
+        )
 
 
 def share(count, total):
@@ -128,7 +141,7 @@ def normal_fit(values, sigma):
 
 def orbit_elements(state):
     """(a, e, inclination in degrees) of a Cartesian state, without the generator."""
-    r, v = state[:3], state[3:6]
+    r, v = state[SATELLITE_POSITION], state[SATELLITE_VELOCITY]
     r_mag = np.linalg.norm(r)
     h = np.cross(r, v)
     a = 1.0 / (2.0 / r_mag - np.dot(v, v) / MU)
@@ -139,10 +152,10 @@ def orbit_elements(state):
 
 def on_sky_rate_arcsec_s(tracklet_rows):
     """Straight-line fit to a tracklet's clean RA/Dec, as motion across the sky."""
-    times = tracklet_rows[:, 14]
-    ra_rate = np.polyfit(times, np.unwrap(tracklet_rows[:, 6]), 1)[0]
-    dec_rate = np.polyfit(times, tracklet_rows[:, 7], 1)[0]
-    cos_dec = np.cos(tracklet_rows[:, 7].mean())
+    times = tracklet_rows[:, TIME_COLUMN]
+    ra_rate = np.polyfit(times, np.unwrap(tracklet_rows[:, RA_COLUMN]), 1)[0]
+    dec_rate = np.polyfit(times, tracklet_rows[:, DEC_COLUMN], 1)[0]
+    cos_dec = np.cos(tracklet_rows[:, DEC_COLUMN].mean())
     return float(np.hypot(ra_rate * cos_dec, dec_rate)) / ARCSEC
 
 
@@ -162,7 +175,7 @@ def data_metrics(output_dir):
     per_tracklet = settings["num_of_observations_per_tracklet"]
     first_rows = rows[::per_tracklet]
     elements = np.array([
-        orbit_elements(rows[rows[:, 16] == obj["object_id"]][0]) for obj in objects
+        orbit_elements(rows[rows[:, OBJECT_ID_COLUMN] == obj["object_id"]][0]) for obj in objects
     ])
 
     # Population, from the rows.
@@ -173,19 +186,20 @@ def data_metrics(output_dir):
     }
 
     # Stations: the true offset at each tracklet's first observation.
-    cosine = np.sum(first_rows[:, :3] * first_rows[:, 8:11], axis=1) / (
-        np.linalg.norm(first_rows[:, :3], axis=1) * np.linalg.norm(first_rows[:, 8:11], axis=1)
+    satellite, site = first_rows[:, SATELLITE_POSITION], first_rows[:, SITE_POSITION]
+    cosine = np.sum(satellite * site, axis=1) / (
+        np.linalg.norm(satellite, axis=1) * np.linalg.norm(site, axis=1)
     )
     offsets = np.degrees(np.arccos(cosine))
 
-    line_of_sight = rows[:, :3] - rows[:, 8:11]
-    up = rows[:, 8:11] / np.linalg.norm(rows[:, 8:11], axis=1, keepdims=True)
+    line_of_sight = rows[:, SATELLITE_POSITION] - rows[:, SITE_POSITION]
+    up = rows[:, SITE_POSITION] / np.linalg.norm(rows[:, SITE_POSITION], axis=1, keepdims=True)
     elevation = np.degrees(np.arcsin(
         np.sum(up * line_of_sight, axis=1) / np.linalg.norm(line_of_sight, axis=1)
     ))
 
     # Timing, relative to the schedule.
-    starts_h = first_rows[:, 14].reshape(len(objects), -1) / 3600.0
+    starts_h = first_rows[:, TIME_COLUMN].reshape(len(objects), -1) / 3600.0
     schedule = np.array(settings["tracklet_schedule_h"])
     jitter = (starts_h - starts_h[:, :1] - schedule)[:, 1:].ravel()
     max_jitter = settings["max_tracklet_jitter_h"]
@@ -201,8 +215,8 @@ def data_metrics(output_dir):
             output_dir / f"generated_data_gcrs_{variant}.txt", delimiter=",", ndmin=2,
         )
         difference = np.column_stack((
-            (noisy[:, 6] - rows[:, 6] + np.pi) % (2.0 * np.pi) - np.pi,
-            noisy[:, 7] - rows[:, 7],
+            (noisy[:, RA_COLUMN] - rows[:, RA_COLUMN] + np.pi) % (2.0 * np.pi) - np.pi,
+            noisy[:, DEC_COLUMN] - rows[:, DEC_COLUMN],
         )) / ARCSEC
         residual = difference - np.repeat(biases, per_tracklet, axis=0)
         noise[variant] = normal_fit(residual.ravel(), sigma)
@@ -210,7 +224,7 @@ def data_metrics(output_dir):
     # Geometry of the pairs.
     near_degenerate = []
     for obj in objects:
-        positions = first_rows[first_rows[:, 16] == obj["object_id"], :3]
+        positions = first_rows[first_rows[:, OBJECT_ID_COLUMN] == obj["object_id"]][:, SATELLITE_POSITION]
         for r1, r2 in combinations(positions, 2):
             angle = np.degrees(np.arccos(np.clip(
                 np.dot(r1, r2) / (np.linalg.norm(r1) * np.linalg.norm(r2)), -1.0, 1.0,
@@ -219,8 +233,8 @@ def data_metrics(output_dir):
 
     # Realism against the paper.
     rates = np.array([
-        on_sky_rate_arcsec_s(rows[rows[:, 15] == tracklet])
-        for tracklet in np.unique(rows[:, 15])
+        on_sky_rate_arcsec_s(rows[rows[:, TRACKLET_ID_COLUMN] == tracklet])
+        for tracklet in np.unique(rows[:, TRACKLET_ID_COLUMN])
     ])
     duration = settings["tracklet_duration_s"]
 
@@ -270,7 +284,7 @@ def data_metrics(output_dir):
                     "paper": "1-2",
                 },
                 "time_span_h": {
-                    "this_dataset": float(first_rows[:, 14].max() / 3600.0),
+                    "this_dataset": float(first_rows[:, TIME_COLUMN].max() / 3600.0),
                     "paper": "about 27",
                 },
             },

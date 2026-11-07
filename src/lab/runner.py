@@ -1,23 +1,13 @@
-"""Run folders: what every experiment/run/run_<stage>.py script is built on.
-
-Each run of a stage gets one folder, named by the hash of its config:
+"""Run folders, shared by every experiment/run/run_<stage>.py.
 
     results/runs/<hash>/config.json   what was run, and its status
-    results/runs/<hash>/run.log       the terminal output, verbatim
-    results/runs/<hash>/metrics.json  how the stage scored, if it has metrics
-    results/runs/<hash>/output/       the stage's files, plus links to its inputs
+    results/runs/<hash>/run.log       terminal output
+    results/runs/<hash>/metrics.json  the stage's metrics, if any
+    results/runs/<hash>/output/       its files, plus links to its parent's
 
-The hash covers the stage, its parameters, its parent run and the code, so the
-same config on the same code maps to the same folder. Generation is seeded and
-the optimiser is deterministic, so a completed run is not repeated.
-
-A stage reads and writes one folder, so a run's output folder starts with links
-to everything its parent can see. config.json lists the files the stage itself
-produced under "outputs".
-
-Pipeline stages run as separate processes, the way you would run them by hand.
-That keeps failures isolated -- one stage blowing up does not take the
-interpreter with it. LAB_DATA_DIR points each one at its run's output folder.
+The hash covers stage, parameters, parent and code. Runs are deterministic, so
+a completed hash is reused. Each stage runs as its own process, pointed at its
+output folder by LAB_DATA_DIR.
 """
 
 import argparse
