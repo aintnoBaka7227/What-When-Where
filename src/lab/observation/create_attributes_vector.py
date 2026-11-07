@@ -1,25 +1,25 @@
+"""Stage 2: fit one attributable per tracklet, for every chain."""
 
 import numpy as np
 
-from lab.data.dataset import VARIANTS, data_file, load_data, uncertainties_arcsec
-from lab.paths import DATA_DIR
+from lab.data.dataset import (
+    DEC_COLUMN,
+    RA_COLUMN,
+    TIME_COLUMN,
+    VARIANTS,
+    data_file,
+    load_data,
+    tracklet_ids,
+    tracklet_rows,
+    uncertainties_arcsec,
+)
+from lab.paths import VariantFiles
 from lab.observation.fit_attributes import fit_attributes
 
 
-# All chains come from one set of orbits, stations and observation epochs. The
-# only columns that differ between them are the measured RA/Dec pair, so each
-# is fitted here by the same code with the same tracklet grouping, and their
-# attributables stay directly comparable row for row.
-#
-# Each entry is (label, attributables npz, attributables txt).
-DATASETS = tuple(
-    (
-        variant,
-        DATA_DIR / f"generated_attributables_{variant}.npz",
-        DATA_DIR / f"generated_attributables_{variant}.txt",
-    )
-    for variant in VARIANTS
-)
+# Stage 2's own copy of these paths, so it does not import stage 3.
+ATTRIBUTABLES_NPZ_FILES = VariantFiles("generated_attributables_{variant}.npz", VARIANTS)
+ATTRIBUTABLES_TXT_FILES = VariantFiles("generated_attributables_{variant}.txt", VARIANTS)
 
 
 def build_attributables(
@@ -27,70 +27,24 @@ def build_attributables(
     attributables_npz_file,
     attributables_txt_file,
 ):
-    """Fit one attributable per tracklet in a generated dataset.
-
-    Parameters
-    ----------
-    variant : str
-        The dataset chain to fit, one of VARIANTS.
-
-    attributables_npz_file : Path
-        Destination for the machine-readable attributables.
-
-    attributables_txt_file : Path
-        Destination for the human-readable attributables.
-    """
-    # Load the simulated observations and their angular-error settings.
-    #
-    # The input data matrix is created by src/lab/data/gcrs_data_generation.py. The
-    # columns used here are:
-    #   6  = measured right ascension, alpha (rad)
-    #   7  = measured declination, delta (rad)
-    #   14 = observation time (s)
-    #   15 = tracklet ID
-    #   16 = object ID
+    """Fit every tracklet of one chain and write the .npz (canonical) and .txt."""
     data = load_data(variant)
 
-    # Relative error represents point-to-point scatter inside a tracklet.
-    # Systematic error represents a common angular offset for the tracklet.
-    # Both values are stored in arcseconds and converted to radians by
-    # fit_attributes().
-    #
-    # The clean dataset carries zeros here, because no noise was added to it.
-    # Its fitted attributables are still exact, but every covariance it
-    # produces is the zero matrix, so the clean file cannot be used by stages
-    # that invert Ca.
+    # Zero for clean, which then gets a zero covariance: no stage may invert it.
     relative_error, systematic_error = uncertainties_arcsec(variant)
 
-    # IDs are stored in the numeric data matrix, so cast them back to integers.
-    object_ids = data[:, 16].astype(int)
-    tracklet_ids = data[:, 15].astype(int)
-
-    # Each result will contain:
-    #   [object_id, tracklet_id, t0, alpha, alpha_dot, delta, delta_dot]
-    #
-    # Each matching covariance is a 4x4 matrix in attributable order:
-    #   [alpha, alpha_dot, delta, delta_dot]
+    # Rows of [object_id, tracklet_id, t0, alpha, alpha_dot, delta, delta_dot].
     results = []
     covariances = []
 
-    # Process each unique object/tracklet pair once. Sorting makes the output
-    # deterministic even if rows in the input file are not grouped by tracklet.
-    for object_id, tracklet_id in sorted(set(zip(object_ids, tracklet_ids))):
-        # Select every angular observation belonging to this tracklet.
-        tracklet = data[
-            (object_ids == object_id)
-            & (tracklet_ids == tracklet_id)
-        ]
+    for object_id, tracklet_id in tracklet_ids(data):
+        # Time-sorted, so the output does not depend on file row order.
+        tracklet = tracklet_rows(data, object_id, tracklet_id)
 
-        # Compress the series of RA/Dec observations into one attributable:
-        #   a  = [alpha, alpha_dot, delta, delta_dot]
-        #   Ca = covariance of a
-        #   t0 = mean observation time used as the fit reference epoch
         a, Ca, t0 = fit_attributes(
-            tracklet[:, 14],
-            tracklet[:, 6],
-            tracklet[:, 7],
+            tracklet[:, TIME_COLUMN],
+            tracklet[:, RA_COLUMN],
+            tracklet[:, DEC_COLUMN],
             relative_error,
             systematic_error,
         )
@@ -98,14 +52,9 @@ def build_attributables(
         results.append([object_id, tracklet_id, t0, *a])
         covariances.append(Ca)
 
-    # Convert the accumulated Python lists into arrays for slicing and saving.
-    # Shapes are (number_of_tracklets, 7) and (number_of_tracklets, 4, 4).
     results = np.array(results)
     covariances = np.array(covariances)
 
-    # Save the machine-readable form without flattening the covariance matrices.
-    # This is the preferred file for later numerical processing because it
-    # preserves integer IDs and the original array shapes.
     np.savez(
         attributables_npz_file,
         object_id=results[:, 0].astype(int),
@@ -115,32 +64,24 @@ def build_attributables(
         Ca=covariances,
     )
 
-    # Build a two-dimensional table for the human-readable text file. Each 4x4
-    # covariance matrix is flattened in row-major order:
-    #   Ca_00, Ca_01, ..., Ca_33.
-    #
-    # The final table has 23 columns:
-    #   2 IDs + t0 + 4 attributable values + 16 covariance values.
+    # Readable copy: Ca flattened row-major, 23 columns in all.
     readable_results = np.column_stack([
         results,
         covariances.reshape(len(covariances), 16),
     ])
 
-    # Write a CSV-style text representation. The header names specify the units
-    # of t0 and the attributable values; covariance units follow from the pair
-    # of attributable components represented by each matrix entry.
     np.savetxt(
         attributables_txt_file,
         readable_results,
         delimiter=",",
         fmt=[
-            "%d",           # object_id: readable integer
-            "%d",           # tracklet_id: readable integer
-            "%.3f",         # t0, seconds
-            "%.12f",        # alpha, radians
-            "%.12e",        # alpha_dot, radians/second
-            "%.12f",        # delta, radians
-            "%.12e",        # delta_dot, radians/second
+            "%d",           # object_id
+            "%d",           # tracklet_id
+            "%.3f",         # t0, s
+            "%.12f",        # alpha, rad
+            "%.12e",        # alpha_dot, rad/s
+            "%.12f",        # delta, rad
+            "%.12e",        # delta_dot, rad/s
             "%.6e", "%.6e", "%.6e", "%.6e",
             "%.6e", "%.6e", "%.6e", "%.6e",
             "%.6e", "%.6e", "%.6e", "%.6e",
@@ -162,10 +103,10 @@ def build_attributables(
 
 
 def main():
-    """Fit attributables for every dataset chain."""
-    for label, npz_file, txt_file in DATASETS:
-        # Each dataset is optional: deleting one to regenerate it should not
-        # stop the others from being fitted.
+    """Fit every chain whose data file exists."""
+    for label in VARIANTS:
+        npz_file = ATTRIBUTABLES_NPZ_FILES[label]
+        txt_file = ATTRIBUTABLES_TXT_FILES[label]
         if not data_file(label).exists():
             print(f"Skipping {label}: {data_file(label)} does not exist")
             continue
