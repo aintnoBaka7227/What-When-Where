@@ -110,6 +110,16 @@ or `experiment/run/` gives new hashes. New figures go in
 `experiment/prod/prod_<stage>.py` and must read a run's saved output rather than
 recompute it.
 
+**Index data rows by name.** `lab.data.dataset` defines the column layout
+(`RA_COLUMN`, `SITE_POSITION`, `TIME_COLUMN`, …) and `tracklet_rows()`. Use those
+rather than `data[:, 16]`; `test/test_dataset.py` checks them against the
+generator.
+
+**Stage paths resolve at call time.** The `*_FILES` mappings are
+`lab.paths.VariantFiles` and read `lab.paths.DATA_DIR` when indexed. Tests use this:
+`test/pipeline_fixture.py` generates a real dataset into a temporary folder and
+runs stages 2–4 there in-process. See [TESTING.md](TESTING.md).
+
 **Check `metrics.json` first.** `experiment/run/show_metrics.py <hash>` prints a
 run's metrics and its ancestors'. Scoring is a sibling of Search, so show it
 separately. Loss at the truth tells a data problem from a Search problem.
@@ -142,10 +152,14 @@ bounds from there.
   standard astrometric convention if comparing to the paper's numbers directly.
 - **Files prefixed `stale_` in `src/lab/data/` are dead.** Superseded generators,
   kept for reference. Not pipeline stages.
-- **Stage 8 misses some true pairs.** In run `cdfe67c70d10`, 15 of 100 true pairs
-  failed: 5 at the 1e+12 penalty and 10 on the wrong `k`. All score near zero at
-  the true ranges and `k`, so the data is correct and the failure is in Search; the
-  cause is uninvestigated.
+- **Stage 8 misses some true pairs.** In run `1e5c9c0a46f5`, 7 of 100 true pairs
+  failed. All score near zero at the true ranges and `k`, so the data is correct
+  and the failure is in Search. Most of the earlier 15 came from the Eq. (31) seed
+  sitting at the lower edge of its revolution bin, a near-0° transfer. It now uses
+  the bin midpoint. The rest have two causes, both measured in `test/test_search.py`:
+  a flat penalty plateau with zero gradient, and a second basin in some
+  multi-revolution landscapes. A sloped penalty or several seeds per `k` would be
+  the next things to try.
 
 ## Note on this file
 

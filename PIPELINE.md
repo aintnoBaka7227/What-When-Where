@@ -47,7 +47,9 @@ chain whose inputs are missing.
 ## Shared conventions
 
 **The `data` matrix** written by stage 1 and read by stages 2, 3 and 6–8 has
-18 columns:
+18 columns. `src/lab/data/dataset.py` names them (`RA_COLUMN`, `SITE_POSITION`,
+…), and every later stage indexes rows through those names. `load_data` refuses a
+file with any other column count.
 
 | Cols | Meaning | Units |
 |---|---|---|
@@ -69,12 +71,14 @@ method — they exist to score it.
 **The attributable** is `[alpha, alpha_dot, delta, delta_dot]` at a reference
 epoch `t0`, in that order, everywhere in the project.
 
-**Paths** are owned by `src/lab/hypothesis/range_bounds.py`, which defines `VARIANTS`
-and the `GENERATED_DATA_FILES` / `ATTRIBUTABLES_FILES` / `PRECISION_OUTPUT_FILES`
-/ `READABLE_OUTPUT_FILES` dictionaries. Stages 4–8 import these rather than
+**Paths** are owned by `src/lab/hypothesis/range_bounds.py`, which defines the
+`ATTRIBUTABLES_FILES` / `PRECISION_OUTPUT_FILES` / `ASSOCIATION_FILES` /
+`READABLE_OUTPUT_FILES` mappings. Stages 4–8 import these rather than
 constructing paths. (`src/lab/observation/create_attributes_vector.py` is the one
 exception — it holds its own copy, so that stage 2 does not have to import from
-stage 3.)
+stage 3.) Each mapping is a `lab.paths.VariantFiles`, which reads
+`lab.paths.DATA_DIR` when indexed rather than at import, as `dataset.py` does. A
+run script or test can therefore repoint `DATA_DIR` after the stages are imported.
 
 ---
 
@@ -184,9 +188,9 @@ rather than trusting the labels.
 
 **Notes.** All unordered pairs are considered, matching the paper's all-vs-all
 test — the method is not told which tracklets belong together. Pairs with
-`delta_t == 0` are dropped, since Lambert needs two distinct epochs and all
-objects share a start epoch. For T tracklets across O objects this gives fewer
-than `C(T,2)` pairs.
+`delta_t == 0` would be dropped, since Lambert needs two distinct epochs. The
+generator gives every object its own random start offset, so no two tracklets
+share an epoch and all `C(T,2)` pairs are kept.
 
 Because `k` depends only on `t0`, which the chains share exactly, their files
 come out **identical**. They are still written separately so
@@ -237,8 +241,9 @@ delta_dot = (vz·s² − pz·(px·vx + py·vy)) / (r²·s)
 `modeled_angular_rates(...)` → `z_hat_dot` = `(alpha_dot_1, delta_dot_1,
 alpha_dot_2, delta_dot_2)`, Eq. (17).
 
-**Self-check.** `test/test_discriminator_loss.py` validates the analytic derivative against finite
-differences before running the demo.
+**Self-check.** `test/test_model.py` validates the analytic derivative against finite
+differences, and checks that at the true state it reproduces stage 2's fitted
+clean rates.
 
 ---
 
@@ -308,7 +313,11 @@ the seed loss, final loss, iterations and loss evaluations.
 **Key functions.**
 
 - `circular_orbit_initial_guess(k, delta_t, c_1, r_s1, c_2, r_s2)` — Eq. (31),
-  the range a circular orbit with the right period would imply.
+  the range a circular orbit with the right period would imply. The period comes
+  from the middle of the revolution bin `[k, k + 0.5)` that the population
+  allows, `k + 0.25` when the whole bin is admissible: a 90° or 270° transfer.
+  It used to be the bin's lower edge, a near-0° transfer where Lambert
+  degenerates.
 - `optimize_hypothesis(variant, k, delta_t, ...)` — Eq. (30), minimising over
   `p = (rho_1, rho_2)` within the bounds, for one `k`, via L-BFGS-B.
 - `best_k_hypothesis(variant, k_min, k_max, ...)` — the above over the whole `k`
@@ -327,21 +336,25 @@ than propagating, so the optimiser can walk out of infeasible regions.
 ## Current status
 
 All eight stages run end to end on all four chains. On a 10-object GCRS dataset
-(50 tracklets, 1,225 pairs), with inclination 0–20°, run `cdfe67c70d10`:
+(50 tracklets, 1,225 pairs), with inclination 0–20°, run `1e5c9c0a46f5`:
 
 | chain | best false pair | true pairs at or above it | best threshold | missed true | accepted false |
 |---|---|---|---|---|---|
-| clean | 9.68e−02 | 15 of 100 | 1.6e−05 | 15 | 0 |
-| noisy_0.7as | 8.05e+02 | 15 of 100 | 10.9 | 15 | 0 |
-| noisy_1.2as | 2.79e+02 | 15 of 100 | 10.6 | 15 | 0 |
-| noisy_2.0as | 1.03e+02 | 15 of 100 | 10.4 | 15 | 0 |
+| clean | 9.68e−02 | 7 of 100 | 2.1e−03 | 7 | 0 |
+| noisy_0.7as | 8.05e+02 | 7 of 100 | 796 | 7 | 0 |
+| noisy_1.2as | 2.79e+02 | 7 of 100 | 12.4 | 7 | 0 |
+| noisy_2.0as | 1.03e+02 | 7 of 100 | 10.4 | 7 | 0 |
 
 The thresholds were chosen on this same data, so they are not validated.
 
-The 15 failures are a Search problem. All 100 true pairs score at most 2.5e−10 at
-their true ranges and `k` on the clean chain. In 5 failures, the only `k` tried
-returns the 1e+12 penalty; in the other 10, Search chooses the wrong `k`. Only 1 of
-the 15 is within 5° of 0°/180°, so degeneracy is not the main cause.
+The 7 failures are a Search problem. All 100 true pairs score at most 2.5e−10 at
+their true ranges and `k` on the clean chain. The same data before the seed fix
+(run `4bb9837b4cf4`) missed 15, chose the right `k` for 90 rather than 97, and
+started 16 true-pair searches on the penalty rather than 6. Two causes remain,
+both measured in `test/test_search.py`. When the seed and the points around it
+have no Lambert solution, the flat 1e+12 penalty gives L-BFGS-B no gradient, so
+it stays there. And some multi-revolution pairs have a second basin that the
+circular seed can fall into.
 
 ## Metrics
 

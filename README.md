@@ -42,7 +42,7 @@ phase. Stage numbers are the order the stages run in. Generated files go in
 | `experiment/prod/` | — | `prod_<stage>.py`: draws figures from a stage's saved result. |
 | `results/` | — | Run folders and figures, keyed by run hash (not tracked). |
 | `data/` | — | Output of stages run by hand (not tracked). |
-| `test/` | — | Test suites. `test_gcrs_data.py` checks that the generator is self-consistent, and `test_data_validation.py` checks it by independent routes. |
+| `test/` | — | One suite per stage; [TESTING.md](TESTING.md) maps them. `pipeline_fixture.py` runs the real generator and stages 2–4 in a temporary folder for the later suites. |
 | `sources/` | — | The paper. |
 
 Two files are worth knowing about before you read any others:
@@ -151,8 +151,14 @@ uv run python src/lab/search/optimise_hypothesis.py # 8  the association test
 
 Stages 6 and 7 are libraries with nothing to run.
 
-`test/test_lambert.py` is a self-test rather than a pipeline stage; run it
-whenever you touch the solver.
+Each stage has its own test suite in `test/`, run as a script:
+
+```bash
+for f in test/test_*.py; do uv run python "$f"; done   # about 2 minutes
+```
+
+[TESTING.md](TESTING.md) lists what each suite checks, and for the Lambert
+solver and the loss, what is a library black box and what this project changed.
 
 ## Conventions
 

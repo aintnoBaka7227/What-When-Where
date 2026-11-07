@@ -28,7 +28,9 @@ responsibility; stage numbers [1]–[8] are the execution order used in
 | `lab` is an installed package, and modules import as `lab.<phase>.<module>` | Replaces per-script `sys.path` edits. `uv sync` installs it in editable mode. |
 | Stage scripts run by file path | `src/lab/runner.py` runs each one as a separate process, so a failure stays isolated. |
 | Run outputs go in `results/`, and stages run by hand write to the untracked `data/` | `src/` holds only code. `src/lab/paths.py` defines these locations. |
-| Tests go in `test/` | One place for all suites. Generator tests use a temporary folder, so they need no tracked data. |
+| Tests go in `test/` | One place for all suites. Every suite generates into a temporary folder, so it needs no tracked data. |
+| Stage paths are `lab.paths.VariantFiles`, resolved when indexed | Repointing `DATA_DIR` after import then moves every stage. Fixed at import, they could silently read `data/` instead of a run's folder. |
+| Data columns are named in `lab.data.dataset` | One layout, checked against the generator, instead of bare indices in each stage. |
 | No generated data is tracked in Git | Every dataset is reproducible from its config, and runs keep their own. |
 | `range_bounds.py` remains the file registry | Moved unchanged in role. `create_attributes_vector.py` still keeps its own list, so stage 2 does not depend on stage 3. |
 
@@ -80,9 +82,9 @@ to plot FP/FN rates, but that is a measurement and does not make a decision.
 
 Every phase runs over all four chains, which share everything except the measured
 angles. Scoring is where their method differs: clean uses the unweighted loss and
-noisy uses the weighted loss. Adding the 1.2″ and 2.0″ noise levels means adding
-chains, which currently requires editing `VARIANTS` in `range_bounds.py` and
-`DATASETS` in `create_attributes_vector.py`.
+noisy uses the weighted loss. Adding a noise level means adding it to
+`RELATIVE_NOISE_CASES_ARCSEC` in `lab.data.dataset`; every stage's paths are
+built from `VARIANTS` there.
 
 ### Current state of the Data phase
 
