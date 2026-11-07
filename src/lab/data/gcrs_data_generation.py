@@ -22,91 +22,64 @@ from astropy.coordinates import (
 )
 
 
-# Astropy stores these constants in SI units:
-#   GM_earth is in m^3/s^2
-#   R_earth is in meters
+# Astropy constants are SI (m^3/s^2, m).
 GM_EARTH = GM_earth.value
 R_EARTH = R_earth.value
 
-# The orbital equations below use kilometers for satellite position, so convert
-# Earth's gravitational parameter from m^3/s^2 to km^3/s^2.
+# km^3/s^2, the unit every orbit equation here uses.
 mu = GM_EARTH / 1000000000
 
 
 def gcrs_to_coe(gcrs):
-    """
-    Convert a Cartesian inertial state into classical orbital elements.
+    """Cartesian state [r, v] -> classical elements [rp, e, i, ohm, omega, v].
 
-    Input gcrs:
-        [rx, ry, rz, vx, vy, vz]
-
-    Output coe:
-        [rp, e, i, ohm, omega, v]
-        rp    = perigee radius
-        e     = eccentricity
-        i     = inclination
-        ohm   = right ascension of ascending node
-        omega = argument of perigee
-        v     = true anomaly
+    rp is perigee radius, ohm the RAAN, omega the argument of perigee and
+    v the true anomaly.
     """
-    # Split the 6-element state vector into position and velocity.
     r = gcrs[0:3]
     v = gcrs[3:6]
 
-    # Magnitudes of position and velocity are used in energy/orbit formulas.
     rmag = np.linalg.norm(r)
     vmag = np.linalg.norm(v)
 
-    # Specific orbital energy. For a bound elliptical orbit, epsilon is negative.
+    # Specific energy, then a from vis-viva.
     epsilon = (vmag * vmag / 2) - (mu / rmag)
-
-    # Semi-major axis from specific orbital energy.
     a = 1 / (-2 * epsilon / mu)
 
-    # Unit position vector.
     rhat = r / rmag
 
-    # Specific angular momentum vector. Its direction is normal to the orbit plane.
     hvec = np.cross(r, v)
     hmag = np.linalg.norm(hvec)
     hhat = hvec / hmag
 
-    # Eccentricity vector points toward periapsis; its magnitude is eccentricity.
+    # Eccentricity vector points to periapsis.
     ecc = np.cross(v, hvec) / mu - rhat
     e = np.linalg.norm(ecc)
 
-    # Inclination is the angle between the orbit normal and Earth's z-axis.
     khat = np.array([0, 0, 1])
     i = np.arccos(np.dot(khat, hhat))
 
-    # Node vector points toward the ascending node, where the orbit crosses the
-    # equatorial plane heading north.
     ihat = np.array([1, 0, 0])
     nvec = np.cross(khat, hvec)
     nhat = nvec / np.linalg.norm(nvec)
 
-    # Right ascension of ascending node. The branch check keeps the angle in
-    # the full 0 to 2*pi range instead of only 0 to pi.
+    # The branch checks extend arccos's [0, pi] to [0, 2*pi).
     if (nhat[1] < 0):
         ohm = 2 * np.pi - np.arccos(np.dot(ihat, nhat))
     else:
         ohm = np.arccos(np.dot(ihat, nhat))
 
-    # Argument of perigee: angle from ascending node to eccentricity vector.
     if (ecc[2] < 0):
         omega = 2 * np.pi - np.arccos(np.dot(nhat, ecc / e))
     else:
         omega = np.arccos(np.dot(nhat, ecc / e))
 
-    # True anomaly: angle from perigee to the current position.
-    # If r dot v is negative, the satellite is moving inward, so use the
-    # second-half-of-orbit angle.
+    # r . v < 0 means moving inward: the second half of the orbit.
     if (np.dot(r, v) < 0):
         v = 2 * np.pi - np.arccos(np.dot(ecc / e, rhat))
     else:
         v = np.arccos(np.dot(ecc / e, rhat))
 
-    # Perigee radius is the closest orbital radius: a * (1 - e).
     rp = a * (1 - e)
     coe = np.array([rp, e, i, ohm, omega, v])
 
@@ -114,40 +87,28 @@ def gcrs_to_coe(gcrs):
 
 
 def coe_to_gcrs(coe):
-    """
-    Convert classical orbital elements into Cartesian position and velocity.
-
-    Input coe:
-        [rp, e, i, ohm, omega, v]
-
-    Output gcrs:
-        6x1 vector [rx, ry, rz, vx, vy, vz]
-    """
-    # Unpack orbital elements. Angles are in radians.
-    rp = coe[0]  # takes km
+    """Classical elements [rp, e, i, ohm, omega, v] -> 6x1 state [r, v]."""
+    rp = coe[0]  # km
     e = coe[1]
     i = coe[2]
     ohm = coe[3]
     omega = coe[4]
     v = coe[5]
 
-    # Convert perigee radius to semi-major axis, then compute semi-latus rectum.
     a = rp / (1 - e)
     p = a * (1 - e * e)
 
-    # Position in the perifocal PQW frame, where the orbit lies in the x-y plane.
+    # Position and velocity in the perifocal (PQW) frame.
     r_pqw_x = (p * np.cos(v)) / (1 + e * np.cos(v))
     r_pqw_y = (p * np.sin(v)) / (1 + e * np.cos(v))
     r_pqw = np.array([r_pqw_x, r_pqw_y, 0])
 
-    # Velocity in the same perifocal frame.
     v_pqw_x = - np.sqrt(mu / p) * np.sin(v)
     v_pqw_y = np.sqrt(mu / p) * (e + np.cos(v))
 
     v_pqw = np.array([v_pqw_x, v_pqw_y, 0])
 
-    # Rotation matrix from perifocal coordinates into the inertial GCRS-like frame.
-    # It combines RAAN (ohm), inclination (i), and argument of perigee (omega).
+    # PQW -> inertial rotation from RAAN, inclination and argument of perigee.
     rotm = np.zeros([3, 3])
     rotm[0, 0] = np.cos(ohm) * np.cos(omega) - np.sin(ohm) * np.sin(omega) * np.cos(i)
     rotm[0, 1] = -np.cos(ohm) * np.sin(omega) - np.sin(ohm) * np.cos(omega) * np.cos(i)
@@ -161,11 +122,9 @@ def coe_to_gcrs(coe):
     rotm[2, 1] = np.cos(omega) * np.sin(i)
     rotm[2, 2] = np.cos(i)
 
-    # Rotate position and velocity out of the orbital plane.
     r = np.matmul(rotm, np.transpose(r_pqw))
     v = np.matmul(rotm, np.transpose(v_pqw))
 
-    # Pack position and velocity into a 6x1 state vector.
     gcrs = np.zeros([6, 1])
     gcrs[0:3, 0] = r
     gcrs[3:6, 0] = v
@@ -175,52 +134,33 @@ def coe_to_gcrs(coe):
 
 def oe_to_gcrs(oe):
     '''
-    Converts orbital elements into position and velocity.
+    Equinoctial elements (a, ex, ey, hx, hy, l) -> state (px, py, pz, vx, vy, vz).
 
-    Parameters
-    ----------
-    oe : np.array (...,6)
-        Orbital elements (a,ex,ey,hx,hy,l).
-
-    Returns
-    -------
-    gcrs : np.array (...,6)
-        Position and velocity (px,py,pz,vx,vy,vz).
+    Accepts arrays shaped (..., 6).
     '''
-    # Assign the equinoctial elements. The .T.copy() form lets this function
-    # work with arrays shaped like (..., 6), not just one flat 6-item vector.
     a, ex, ey, hx, hy, l = oe.T.copy()
 
-    # Semi-latus rectum. In equinoctial form, eccentricity is split across ex/ey.
     p = a * (1 - (ex ** 2 + ey ** 2))
 
-    # Repeated terms used by the equinoctial position/velocity equations.
     s2 = 1 + hx ** 2 + hy ** 2
     alpha2 = hx ** 2 - hy ** 2
 
-    # Orbital radius at longitude l.
     r = p / (1 + ex * np.cos(l) + ey * np.sin(l))
 
-    # Direction terms for the inertial position vector.
     px = np.cos(l) + alpha2 * np.cos(l) + 2 * hx * hy * np.sin(l)
     py = np.sin(l) - alpha2 * np.sin(l) + 2 * hx * hy * np.cos(l)
     pz = 2 * (hx * np.sin(l) - hy * np.cos(l))
 
-    # Scale the direction by orbital radius.
     pos = r / s2 * np.array([px, py, pz])
 
-    # Direction terms for the inertial velocity vector.
     vx = np.sin(l) + alpha2 * np.sin(l) - 2 * hx * hy * np.cos(l) + ey - 2 * ex * hx * hy + alpha2 * ey
     vy = -np.cos(l) + alpha2 * np.cos(l) + 2 * hx * hy * np.sin(l) - ex + 2 * ey * hx * hy + alpha2 * ex
     vz = -2 * (hx * np.cos(l) + hy * np.sin(l) + ex * hx + ey * hy)
 
-    # Scale velocity by sqrt(mu / p). The commented line above used SI mu;
-    # this version uses the km-based mu that matches the rest of the script.
+    # km-based mu; the SI version was:
     # vel = -1 / s2 * np.sqrt(GM_EARTH / p) * np.array([vx, vy, vz])
     vel = -1 / s2 * np.sqrt(mu / p) * np.array([vx, vy, vz])
 
-    # Construct the position/velocity state matrix:
-    # [rx, ry, rz, vx, vy, vz].
     gcrs = np.array([pos[0], pos[1], pos[2],
                      vel[0], vel[1], vel[2]]).T
 
@@ -229,53 +169,40 @@ def oe_to_gcrs(oe):
 
 def gcrs_to_oe(gcrs):
     """
-    Convert a Cartesian inertial state back into equinoctial orbital elements.
+    State [r, v] -> equinoctial elements [a, f, g, h, k, L].
 
-    Output:
-        [a, f, g, h, k, L]
-
-    The current main script does not call this function, but it is the inverse
-    companion to oe_to_gcrs for many orbital-element workflows.
+    Unused. Known bug: s2 = 1 + h + k should be 1 + h**2 + k**2.
     """
-    # Split the incoming state into position and velocity.
     r = gcrs[0:3]
     v = gcrs[3:6]
 
-    # Dot product between position and velocity. This is computed here but is
-    # only used by the commented-out vhat formula below.
+    # Only used by the commented-out vhat below.
     rdv = np.dot(r, v)
 
-    # Position direction and magnitude.
     rhat = r / np.linalg.norm(r)
     rmag = np.linalg.norm(r)
 
-    # Angular momentum vector defines the orbit plane.
     hvec = np.cross(r, v)
     hmag = np.linalg.norm(hvec)
     hhat = hvec / hmag
 
-    # Velocity direction and magnitude.
     # vhat = (rmag * v - rdv * rhat) / hmag
     vhat = v / np.linalg.norm(v)
     vmag = np.linalg.norm(v)
 
-    # Semi-latus rectum from angular momentum.
     p = (hmag * hmag) / mu
 
-    # Equinoctial inclination components derived from angular momentum direction.
     k = hhat[0] / (1 + hhat[2])
     h = -hhat[1] / (1 + hhat[2])
 
-    # Repeated terms for the fhat/ghat basis vectors.
     kk = k * k
     hh = h * h
     s2 = 1 + h + k
     tkh = 2 * k * h
 
-    # Eccentricity vector, projected later onto the equinoctial basis.
     ecc = np.cross(v, hvec) / mu - rhat
 
-    # fhat and ghat are basis vectors used to express eccentricity components.
+    # Equinoctial basis vectors.
     fhat = np.zeros([3])
     fhat[0] = 1 - kk + hh
     fhat[1] = tkh
@@ -285,24 +212,19 @@ def gcrs_to_oe(gcrs):
     ghat[1] = 1 + kk - hh
     ghat[2] = 2 * h
 
-    # Normalize the basis vectors.
     fhat = fhat / s2
     ghat = ghat / s2
 
-    # Equinoctial eccentricity components.
     f = np.dot(ecc, fhat)
     g = np.dot(ecc, ghat)
 
-    # Coordinates of r in the fhat/ghat frame. These are calculated but not used
-    # by the final expression below.
+    # Unused.
     X1 = np.dot(r, fhat)
     Y1 = np.dot(r, ghat)
 
-    # Semi-major axis from specific orbital energy.
     epsilon = (vmag * vmag / 2) - (mu / rmag)
     a = 1 / (-2 * epsilon / mu)
 
-    # Longitude-like angle for the equinoctial representation.
     L = np.arctan2(rhat[1] - vhat[0], rhat[0] + vhat[1])
     oe = np.array([a, f, g, h, k, L])
 
@@ -311,36 +233,27 @@ def gcrs_to_oe(gcrs):
 
 def coe_to_eq_oe(coe):
     """
-    Convert classical orbital elements to equinoctial orbital elements.
-    equinoctial elements are used by the propagator because they avoid singularities
-    at zero eccentricity(circular orbit e = 0) and zero inclination(i=0).
+    Classical [rp, e, i, ohm, omega, v] -> equinoctial [a, ex, ey, hx, hy, lv].
 
-    Classical input:
-        [rp, e, i, ohm, omega, v]
-
-    Equinoctial output:
-        [a, ex, ey, hx, hy, lv]
+    The propagator uses equinoctial elements, which have no singularity at
+    e = 0 or i = 0.
     """
-    # Unpack the classical elements.
-    rp = coe[0]  # takes km
+    rp = coe[0]  # km
     e = coe[1]
     i = coe[2]
     ohm = coe[3]
     omega = coe[4]
     v = coe[5]
 
-    # Convert perigee radius to semi-major axis.
     a = rp / (1 - e)
 
-    # Store eccentricity as x/y components instead of magnitude + angle.
     ex = e * np.cos(omega + ohm)
     ey = e * np.sin(omega + ohm)
 
-    # Store inclination/RAAN as x/y components using tan(i / 2).
     hx = np.tan(i / 2) * np.cos(ohm)
     hy = np.tan(i / 2) * np.sin(ohm)
 
-    # True longitude is true anomaly plus argument of perigee plus RAAN.
+    # True longitude.
     lv = v + omega + ohm
 
     eq_oe = np.array([a, ex, ey, hx, hy, lv])
@@ -350,75 +263,56 @@ def coe_to_eq_oe(coe):
 @jit(nopython=True, nogil=True, cache=True)
 def two_body(mu, tau, ri, vi):
     """
-    Propagate a satellite under ideal two-body motion.
+    Propagate (ri, vi) by tau seconds under point-mass two-body motion.
 
-    This ignores drag, Earth's oblateness, third-body gravity, maneuvers, and
-    measurement noise. It only models motion caused by a point-mass Earth.
+    Universal-variable solve with a continued-fraction evaluation, valid for
+    elliptic, parabolic and hyperbolic orbits. km, km/s, s.
 
-    :param mu: gravitational constant(km ** 3 / sec ** 2)
-    :param tau: propagation time interval(seconds)
-    :param ri: initial eci position vector(kilometers)
-    :param vi: initial eci velocity vector(kilometers / second)
-    :return:
-    rf = final eci position vector(kilometers)
-    vf = final eci velocity vector(kilometers / second)
+    :return: rf, vf
     """
-    # Numerical tolerance for solving the universal-variable time equation.
     tolerance = 1.0e-12
 
-    # Universal anomaly / universal variable. The loop below adjusts this until
-    # the computed propagation time matches tau.
+    # Universal variable, iterated until the implied time matches tau.
     u = np.float64(0.0)
 
-    # Previous iteration values used to detect stalled convergence.
+    # Previous values, to detect a stalled iteration.
     uold = 100
     dtold = 100
 
-    # Maximum number of iterations for the universal-variable solve.
     # imax = 20
     imax = 100
 
-    # Initial search bounds for u. These replace sys.float_info because Numba's
-    # nopython mode works best with explicit numeric constants.
+    # Explicit constants, since numba nopython mode cannot use sys.float_info.
     # umax = sys.float_info.max
     # umin = -sys.float_info.max
     umax = np.float64(1.7976931348623157e+308)
     umin = np.float64(-umax)
 
-    # Number of complete revolutions included in the propagation interval.
     orbits = 0
 
-    # Desired elapsed time.
     tdesired = tau
 
-    # Absolute time-error threshold. For tau = 0, this threshold is also 0.
+    # Zero when tau = 0.
     threshold = tolerance * abs(tdesired)
 
-    # Initial orbital radius and radial velocity-like dot product.
     r0 = np.linalg.norm(ri)
 
     n0 = np.dot(ri, vi)
 
-    # Energy-related parameter. Positive beta corresponds to elliptic motion,
-    # zero to parabolic, and negative to hyperbolic.
+    # beta > 0 elliptic, = 0 parabolic, < 0 hyperbolic.
     beta = 2 * (mu / r0) - np.dot(vi, vi)
 
-    # For non-parabolic motion, use beta to set a tighter valid interval for u.
     if (beta != 0):
         umax = +1 / np.sqrt(abs(beta))
         umin = -1 / np.sqrt(abs(beta))
 
-    # Elliptic orbits can wrap around the central body multiple times during tau.
-    # This estimates how many full revolutions must be included.
+    # Complete revolutions contained in tau, for elliptic orbits.
     if (beta > 0):
         orbits = beta * tau - 2 * n0
         orbits = 1 + (orbits * np.sqrt(beta)) / (np.pi * mu)
         orbits = np.floor(orbits / 2)
 
-    # Solve for the universal variable u by iteration.
     for i in range(imax):
-        # q and the continued fraction terms are part of a universal-variable
-        # formulation that works across elliptic, parabolic, and hyperbolic cases.
         q = beta * u * u
         q = q / (1 + q)
         n = 0
@@ -431,7 +325,7 @@ def two_body(mu, tau, ri, vi):
 
         gold = 0
 
-        # Evaluate the continued fraction until it stops changing.
+        # Continued fraction, evaluated until it stops changing.
         while (gcf != gold):
             k = -k
             l = l + 2
@@ -442,7 +336,6 @@ def two_body(mu, tau, ri, vi):
             gold = gcf
             gcf = gold + s
 
-        # Universal functions used to compute time and the Lagrange coefficients.
         h0 = 1 - 2 * q
         h1 = 2 * u * (1 - q)
         u0 = 2 * h0 * h0 - 1
@@ -450,27 +343,20 @@ def two_body(mu, tau, ri, vi):
         u2 = 2 * h1 * h1
         u3 = 2 * h1 * u2 * gcf / 3
 
-        # Add complete-orbit time contribution for elliptic multi-revolution cases.
         if (orbits != 0):
             u3 = u3 + 2 * np.pi * orbits / (beta * np.sqrt(beta))
 
-        # r1 is the final radius implied by the current u.
         r1 = r0 * u0 + n0 * u1 + mu * u2
-
-        # dt is the propagation time implied by the current u.
         dt = r0 * u1 + n0 * u2 + mu * u3
 
-        # Derivative-like slope used to update u with a Newton-style step.
+        # Newton slope d(dt)/du.
         slope = 4 * r1 / (1 + beta * u * u)
 
-        # Remaining time error.
         terror = tdesired - dt
 
-        # Stop if the computed time is close enough to the requested time.
         if (abs(terror) < threshold):
             break
 
-        # Stop if u or dt is no longer changing, which prevents an infinite loop.
         if ((i > 1) and (u == uold)):
             break
 
@@ -480,10 +366,9 @@ def two_body(mu, tau, ri, vi):
         uold = u
         dtold = dt
 
-        # Proposed update step for u.
+        # Newton step, bisecting if it leaves the bracket.
         ustep = terror / slope
 
-        # Update lower/upper bounds and keep u inside the current bracket.
         if (ustep > 0):
             umin = u
             u = u + ustep
@@ -495,59 +380,38 @@ def two_body(mu, tau, ri, vi):
             if (u < umin):
                 u = (umin + umax) / 2
 
+        # Never fires: i stops at imax - 1.
         if (i == imax):
             print('max iterations in twobody2 function')
 
-    # Lagrange f and g coefficients map the initial state to the final state.
+    # Lagrange f and g coefficients.
     # usaved = u
     f = 1.0 - (mu / r0) * u2
     gg = 1.0 - (mu / r1) * u2
     g = r0 * u1 + n0 * u2
     ff = -mu * u1 / (r0 * r1)
 
-    # Final position and velocity after tau seconds.
     rf = f * ri + g * vi
     vf = ff * ri + gg * vi
     return rf, vf
 
 
-
-
-
-
-
 @jit(nopython=True, nogil=True, cache=True)
 def gcrs_to_radec(gcrs):
     '''
-    Converts cartesian gcrs into pointing coordinates (eci_frame <-> ra/dec).
-    Loose reference: www.astrosurf.com/jephem/library/li110spherCart_en.htm
+    Cartesian (px, py, pz[, vx, vy, vz]) -> (ra, dec), ra in [0, 2*pi).
 
-    Parameters
-    ----------
-    gcrs : np.array (...,3) or (...,6)
-        Cartesian coordinates (px,py,pz,(vx,vy,vz)).
-
-    Returns
-    -------
-    radec : np.array (...,2)
-        Spherical coordinates (ra, dec).
+    Reference: www.astrosurf.com/jephem/library/li110spherCart_en.htm
     '''
-    # Separate and assign the Cartesian position components. If a 6-element
-    # state is passed in, only the first 3 position values are used.
     px, py, pz = gcrs.T[:3]
 
-    # Distance from the origin to the point.
     rho = np.sqrt(px ** 2 + py ** 2 + pz ** 2)
 
-    # Right ascension is the angle in the x-y plane measured from +x toward +y.
     ra = np.arctan2(py, px)
 
-    # arctan2 returns values from -pi to pi; convert negative values into
-    # the 0 to 2*pi range used by many astronomy workflows.
     if ra < 0:
         ra = 2 * np.pi + ra
 
-    # Declination is the angle above/below the x-y plane.
     dec = np.arcsin(pz / rho)
 
     radec = np.array([ra, dec]).T
@@ -555,16 +419,8 @@ def gcrs_to_radec(gcrs):
     return radec
 
 
-
-
 def radec_to_point(radec):
-    """
-    Convert right ascension and declination into a 3D unit direction vector.
-
-    This helper is not used in the main generation block, but it is the inverse
-    idea of gcrs_to_radec: angles in, unit pointing vector out.
-    """
-    # Standard spherical-to-Cartesian conversion for a unit vector.
+    """(ra, dec) -> unit direction vector. Inverse of gcrs_to_radec; unused."""
     point = np.array([np.cos(radec[1]) * np.cos((radec[0])),
                       np.cos(radec[1]) * np.sin(radec[0]),
                       np.sin(radec[1])])
@@ -574,8 +430,7 @@ def radec_to_point(radec):
 NEAR_GEO_ORBIT_RANGE_A = [38000, 45000]  # km
 NEAR_GEO_INCLINATION_RANGE_DEG = [0.0, 20.0]  # deg
 
-# Output row layout. Columns 0-16 match stale_new_data_gen.py's dataset layout;
-# column 17 is an extra per-observation ID.
+# Output row layout; lab.data.dataset names each column.
 #   0-2   satellite position rx, ry, rz (GCRS)    km
 #   3-5   satellite velocity vx, vy, vz (GCRS)    km/s
 #   6-7   topocentric RA, Dec                     rad
@@ -593,12 +448,10 @@ OBSERVATION_ID_COLUMN = 17
 
 def next_ids(output_path):
     """
-    Return the next unused (tracklet_id, object_id, observation_id) for an
-    output file.
+    Next unused (tracklet_id, object_id, observation_id) for an output file.
 
-    The output file is appended to across runs, so IDs continue from the last
-    row already written rather than restarting at zero. A missing or empty file
-    starts all IDs at zero.
+    Files are appended to across runs, so IDs continue from the last row. A
+    missing or empty file starts at zero.
     """
     try:
         with open(output_path, 'r') as f:
@@ -627,13 +480,10 @@ def next_ids(output_path):
 
 def load_settings_record(settings_path, settings, num_existing_objects):
     """
-    Load the settings record that accompanies the data files, or start one.
+    Load the dataset's settings record, or start one.
 
-    The record holds the run-independent generation settings once, plus one
-    entry per generated object. Because the data files are appended to across
-    runs, every run must use the same settings; this raises before any data is
-    written if the current settings differ from the recorded ones, or if the
-    record does not cover the objects already in the data files.
+    Raises before anything is written if the settings differ from those
+    recorded, or if the record does not cover the objects already in the data.
     """
     try:
         with open(settings_path, 'r') as f:
@@ -674,12 +524,9 @@ def load_settings_record(settings_path, settings, num_existing_objects):
 
 def fix_station_to_earth(site_gcrs_m, observation_time):
     """
-    Attach a GCRS point to the rotating Earth.
+    Attach a GCRS point (m) to the rotating Earth at observation_time.
 
-    site_gcrs_m is a station position along GCRS axes, in meters, valid at
-    observation_time. It is converted once to ITRS, the Earth-fixed frame, so
-    the returned EarthLocation is the patch of ground under that point and
-    rotates with Earth from then on.
+    Converted once to ITRS, so the station stays on that patch of ground.
     """
     site_gcrs = GCRS(
         CartesianRepresentation(site_gcrs_m * u.m),
@@ -696,12 +543,10 @@ def fix_station_to_earth(site_gcrs_m, observation_time):
 
 def station_gcrs_state(station, observation_time):
     """
-    Return a ground station's GCRS position (km) and velocity (km/s).
+    A station's GCRS position (km) and velocity (km/s) at observation_time.
 
-    Astropy rotates the station's fixed ITRS coordinates into GCRS at
-    observation_time, including Earth rotation, precession, nutation and polar
-    motion. The velocity is the station's motion as Earth carries it around,
-    the r_s-dot term of Siminski et al. (2014) Eq. (6).
+    Includes Earth rotation, precession, nutation and polar motion. The
+    velocity is the r_s-dot term of Siminski et al. (2014) Eq. (6).
     """
     site_position, site_velocity = station.get_gcrs_posvel(observation_time)
 
@@ -715,12 +560,10 @@ def generate_object(test_case='a'):
     """
     Draw one object and append its rows to every data file.
 
-    test_case chooses the random orbit family, 'a' to 'd', from the
-    eccentricity/perigee-radius ranges below. The generator is seeded with the
-    object's ID, so object n is always identical, whichever run creates it.
+    test_case 'a'-'d' picks the eccentricity range below. Seeded with the
+    object ID, so object n is always identical.
     """
-    # Eccentricity range of each test case. All cases share the semi-major axis
-    # range NEAR_GEO_ORBIT_RANGE_A.
+    # All cases share NEAR_GEO_ORBIT_RANGE_A.
     eccentricity_ranges = {
         'a': [0.0, 0.01],   # near-circular: the paper's near-GEO case
         'b': [0.01, 0.2],
@@ -729,35 +572,23 @@ def generate_object(test_case='a'):
     }
     a_min, a_max = NEAR_GEO_ORBIT_RANGE_A  # km
 
-    # Settings record: the run-independent settings plus every object's drawn
-    # orbit, stations and biases, so a dataset can be described and audited.
-    # All outputs go to the data folder.
     settings_output = settings_file()
     settings_output.parent.mkdir(parents=True, exist_ok=True)
 
-    # Output files. The script opens these in append mode later, so repeated
-    # runs add rows instead of replacing old rows. All files are written from
-    # the same orbit, stations and epochs and differ only in the RA/Dec columns:
-    # the clean file holds the true angles, each noisy file adds measurement
-    # error at one relative noise level, named in its filename.
+    # Appended to. Same orbits, stations and epochs; only RA/Dec differ.
     clean_output = data_file('clean')
     noisy_outputs = {
         sigma_arcsec: data_file(variant)
         for variant, sigma_arcsec in NOISY_VARIANTS.items()
     }
 
-    # Siminski et al. (2014) measurement-error model (Section 6.1).
-    # Relative noise is redrawn for every observation; the systematic error is
-    # drawn once per tracklet and held constant, modelling the ZimSMART
-    # exposure-epoch offset. Set sigma_systematic to 0 for relative noise only.
-    # RA noise is not divided by cos(dec), matching observation/fit_attributes.py.
+    # Siminski et al. (2014) Section 6.1 error model: relative noise per
+    # observation, systematic bias once per tracklet (the ZimSMART epoch
+    # offset). RA noise is not divided by cos(dec), matching fit_attributes.py.
     ARCSEC = np.deg2rad(1.0 / 3600.0)
     sigma_systematic = 5.0 * ARCSEC   # rad
 
-    # Unique IDs, continued from any rows already in the output files:
-    # one object_id per run, one tracklet_id per site window, one
-    # observation_id per row. The clean and noisy files share IDs row for row,
-    # so they must all be in step.
+    # IDs continue from existing rows; every file must be in step.
     first_tracklet_id, object_id, observation_id = next_ids(clean_output)
     for noisy_output in noisy_outputs.values():
         if next_ids(noisy_output) != (first_tracklet_id, object_id, observation_id):
@@ -766,15 +597,12 @@ def generate_object(test_case='a'):
                 f"delete all generated_data_gcrs_* files and regenerate."
             )
 
-    # All randomness below comes from this generator.
+    # The only source of randomness.
     rng = np.random.default_rng(object_id)
 
-    # Each test case builds one random set of classical orbital elements:
-    #   [rp, e, i, ohm, omega, v]
-    # where rp is perigee radius, e is eccentricity, i is inclination,
-    # ohm is RAAN, omega is argument of perigee, and v is true anomaly.
+    # [rp, e, i, ohm, omega, v]. rp is drawn so that a is uniform on
+    # [a_min, a_max] for the drawn e.
     if test_case == 'a': # nearly circular orbital test case
-        # Eccentricity 0-0.01; rp chosen so semi-major axis is 38000-45000 km.
         e = rng.uniform(*eccentricity_ranges['a'])
         coe_oe = np.array([rng.uniform(a_min * (1 - e), a_max * (1 - e)),
                         e, #e
@@ -783,7 +611,6 @@ def generate_object(test_case='a'):
                         rng.uniform(0, 2 * np.pi), #omega
                         rng.uniform(0, 2 * np.pi)]) #v
     elif test_case == 'b':
-        # Eccentricity 0.01-0.2; rp chosen so semi-major axis is 38000-45000 km.
         e = rng.uniform(*eccentricity_ranges['b'])
         coe_oe = np.array([rng.uniform(a_min * (1 - e), a_max * (1 - e)),
                         e,  # e
@@ -792,7 +619,6 @@ def generate_object(test_case='a'):
                         rng.uniform(0, 2 * np.pi),  # omega
                         rng.uniform(0, 2 * np.pi)])  # v
     elif test_case == 'c':
-        # Eccentricity 0.2-0.4; rp chosen so semi-major axis is 38000-45000 km.
         e = rng.uniform(*eccentricity_ranges['c'])
         coe_oe = np.array([rng.uniform(a_min * (1 - e), a_max * (1 - e)),
                         e,  # e
@@ -801,7 +627,6 @@ def generate_object(test_case='a'):
                         rng.uniform(0, 2 * np.pi),  # omega
                         rng.uniform(0, 2 * np.pi)])  # v
     elif test_case == 'd':
-        # Eccentricity 0.4-0.6; rp chosen so semi-major axis is 38000-45000 km.
         e = rng.uniform(*eccentricity_ranges['d'])
         coe_oe = np.array([rng.uniform(a_min * (1 - e), a_max * (1 - e)),
                         e,  # e
@@ -811,51 +636,36 @@ def generate_object(test_case='a'):
                         rng.uniform(0, 2 * np.pi)])  # v
 
 
-    # Data-set size and timing controls.
-    # Tracklets follow an irregular schedule, so that the gaps between them are
-    # not multiples of one interval. Evenly spaced gaps all reach ~0 or ~180 deg
-    # transfer angles at the same orbital period, where Lambert's problem is
-    # degenerate (r1 and r2 nearly collinear), and an object can lose every pair
-    # at once. With irregular gaps, each pair goes bad at a different period.
-    # Each object shifts the whole schedule by its own start offset and jitters
-    # each later tracklet, so objects are not all observed at the same epochs.
+    # Irregular tracklet gaps, so pairs reach the degenerate 0/180 deg
+    # transfer angles at different orbital periods rather than all at once.
+    # Each object gets its own start offset and per-tracklet jitter.
     num_of_sites = 5
 
-    # Start of each site observation window, before offset and jitter.
     tracklet_schedule_h = [0.0, 13.0, 29.0, 37.0, 53.0]
 
-    # Each object's schedule starts this far after the epoch, at most.
     max_start_offset_h = 24.0
 
-    # Each tracklet after the first moves by up to this much, either way.
+    # Applied to every tracklet but the first, either way.
     max_tracklet_jitter_h = 2.0
 
-    # Number of measurements generated for each site.
     num_of_pts_in_each_site = 5
 
-    # Tracklet duration: time from the first to the last measurement of a site.
-    # Siminski et al. (2014) Table 2 gives 1-2 min for the ZimSMART tracklets.
+    # Table 2: ZimSMART tracklets last 1-2 min.
     measurement_time_in_each_site = 80 #seconds
 
-    # Time spacing between measurements within a site. With 80 seconds and
-    # 5 points, the script samples at 0, 20, 40, 60, and 80 seconds, matching
-    # the ~20 s spacing of the ZimSMART tracklets in Siminski et al. (2014).
+    # 20 s spacing, matching ZimSMART.
     measurement_time_interval_within_each_site = measurement_time_in_each_site / (num_of_pts_in_each_site - 1)
 
-    # Convert classical orbital elements to equinoctial elements, then to the
-    # initial Cartesian position/velocity state used by the propagator.
     eq_oe = coe_to_eq_oe(coe_oe)
     rv_init = oe_to_gcrs(eq_oe)
 
-    # Add a leading dimension so the rest of the code can index as rv_init[0, :].
+    # Leading dimension, so rows index as rv_init[0, :].
     rv_init = rv_init[np.newaxis, :]
 
-    # Absolute epoch corresponding to measurement_time = 0 seconds.
-    # Adopt GCRS axes for the synthetic satellite position and velocity.
+    # measurement_time = 0. First frame of Table 2.
     epoch = Time("2012-08-18T22:59:08", scale="utc")
 
-    # Run-independent settings. Every run appending to the same data files
-    # must use exactly these, which load_settings_record enforces.
+    # Must match any existing record; load_settings_record enforces it.
     settings = {
         'frame': 'GCRS',
         'random_seed': 'object_id, via np.random.default_rng',
@@ -894,8 +704,7 @@ def generate_object(test_case='a'):
     }
     settings_record = load_settings_record(settings_output, settings, object_id)
 
-    # This object's randomly drawn values, added to the settings record after
-    # its rows are written.
+    # This object's draws, recorded once its rows are written.
     object_record = {
         'object_id': object_id,
         'orbital_elements': {
@@ -912,7 +721,7 @@ def generate_object(test_case='a'):
         'tracklets': [],
     }
 
-    # This object's tracklet start times, in seconds since the epoch.
+    # Tracklet start times, s since the epoch.
     start_offset_h = rng.uniform(0.0, max_start_offset_h)
     jitter_h = rng.uniform(-max_tracklet_jitter_h, max_tracklet_jitter_h, num_of_sites)
     jitter_h[0] = 0.0
@@ -920,28 +729,22 @@ def generate_object(test_case='a'):
         start_offset_h + np.array(tracklet_schedule_h) + jitter_h
     ) * 3600.0
 
-    # Outer loop: create one independent observing station per tracklet.
+    # One new station per tracklet.
     for i in range(num_of_sites):
         tracklet_id = first_tracklet_id + i
 
-        # One constant RA bias and one constant Dec bias for this tracklet,
-        # applied identically to every noisy file.
+        # Per-tracklet bias, shared by every noisy file.
         ra_bias = rng.normal(0.0, sigma_systematic)
         dec_bias = rng.normal(0.0, sigma_systematic)
 
-        # Inner loop: observations from the same station.
         for j in range(num_of_pts_in_each_site):
-            # Elapsed propagation time in seconds.
             measurement_time = (
                 tracklet_starts[i]
                 + j * measurement_time_interval_within_each_site
             )
 
-            # Absolute timestamp used by Astropy.
             observation_time = epoch + measurement_time * u.s
 
-            # Propagate the satellite to the current observation time.
-            # Position: km. Velocity: km/s.
             r, v = two_body(
                 mu,
                 measurement_time,
@@ -949,19 +752,16 @@ def generate_object(test_case='a'):
                 rv_init[0, 3:6],
             )
 
-            # Pack propagated position and velocity into the original shape.
             rv = np.zeros_like(rv_init)
             rv[0, 0:3] = r
             rv[0, 3:6] = v
 
             if j == 0: # setup the rsite
-                # Start with the satellite radial direction at the first point
-                # in this site window.
+                # Start below the satellite.
                 rsite = rv[0, 0:3] / np.linalg.norm(rv[0, 0:3])
 
-                # Pick a random axis perpendicular to the radial direction, so
-                # that rotating about it moves the station by exactly rot_angle.
-                # An axis at any other angle moves it by less.
+                # A random axis perpendicular to rsite, so the rotation moves
+                # the station by exactly rot_angle (up to 45 deg).
                 rot_axis = np.array([
                     rng.uniform(-1, 1),
                     rng.uniform(-1, 1),
@@ -971,18 +771,14 @@ def generate_object(test_case='a'):
                 rot_axis = rot_axis / np.linalg.norm(rot_axis)
                 rot_angle = rng.uniform(0, np.pi / 4)
 
-                # scipy Rotation expects a rotation vector:
-                # direction = rotation axis, magnitude = rotation angle.
                 curr_R = R.from_rotvec(rot_angle * rot_axis)
                 curr_R_mat = curr_R.as_matrix()
 
-                # Initial station position on the spherical Earth, in meters.
+                # On the R_EARTH sphere, in m.
                 rotated_rsite = np.matmul(curr_R_mat, rsite)
                 rotated_rsite = rotated_rsite * R_EARTH
 
-                # Attach the chosen GCRS point to the ground at this tracklet's
-                # first observation time, and keep that station for all
-                # observations in this tracklet.
+                # Fixed to the ground for the rest of the tracklet.
                 station = fix_station_to_earth(rotated_rsite, observation_time)
 
                 object_record['tracklets'].append({
@@ -995,23 +791,17 @@ def generate_object(test_case='a'):
                     'dec_systematic_bias_arcsec': dec_bias / ARCSEC,
                 })
 
-            # For every observation, calculate this station's current GCRS
-            # position (km) and velocity (km/s) as Earth carries it around.
             r_site, v_site = station_gcrs_state(station, observation_time)
 
-            # Geometric topocentric RA/Dec from the updated station position.
+            # Geometric angles: no light-time, aberration or refraction.
             ra_true, dec_true = gcrs_to_radec(rv[0, 0:3] - r_site)
 
-            # Fresh per-observation noise, drawn once as a unit normal and then
-            # scaled to each noise level. The noisy files therefore share the
-            # same underlying draws and differ only in noise amplitude, so a
-            # change in results between levels is due to sigma, not to luck.
+            # One unit draw per observation, scaled to each noise level, so
+            # the noisy files differ only in amplitude.
             ra_unit_noise = rng.normal(0.0, 1.0)
             dec_unit_noise = rng.normal(0.0, 1.0)
 
-            # Row layout is documented at NUM_OF_OUTPUT_COLUMNS. RA/Dec sit
-            # between row_head and row_tail. The satellite state is the true
-            # state in every file; only the measured angles differ.
+            # Every file holds the true state; only RA/Dec differ.
             row_head = (
                 f"{rv[0,0]},{rv[0,1]},{rv[0,2]},"
                 f"{rv[0,3]},{rv[0,4]},{rv[0,5]},"
@@ -1026,7 +816,6 @@ def generate_object(test_case='a'):
             with open(clean_output, 'a') as f:
                 f.write(row_head + f"{ra_true},{dec_true}," + row_tail)
 
-            # Noisy angles: per-tracklet bias plus scaled per-observation noise.
             for sigma_arcsec, noisy_output in noisy_outputs.items():
                 sigma_relative = sigma_arcsec * ARCSEC  # rad
                 ra_noisy = (
@@ -1039,8 +828,7 @@ def generate_object(test_case='a'):
 
             observation_id += 1
 
-    # Record this object and rewrite the settings file. Values are converted
-    # to plain floats so the JSON holds ordinary numbers.
+    # Plain Python numbers, for JSON.
     def to_builtin(value):
         if isinstance(value, dict):
             return {key: to_builtin(item) for key, item in value.items()}

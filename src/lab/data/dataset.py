@@ -1,16 +1,8 @@
-"""The dataset gcrs_data_generation.py writes, as the later stages read it.
+"""Reading the dataset gcrs_data_generation.py writes.
 
-Every chain is one text file of observation rows: clean holds the true angles,
-and each noisy file adds measurement error at one relative noise level. They
-come from the same orbits, stations and epochs and differ only in the RA/Dec
-columns, so a result can be compared across noise levels. Settings the rows
-cannot hold, such as the noise and orbit population, are in one JSON record.
-
-The text files are the canonical data. Angles are written at full precision and
-read back exactly.
-
-Paths are looked up when called, not at import, so that a run script can point
-lab.paths.DATA_DIR at its own output folder.
+One text file of rows per chain. Chains share orbits, stations and epochs and
+differ only in RA/Dec. A JSON record holds the settings rows cannot. The text
+files are canonical and read back exactly. Paths resolve DATA_DIR when called.
 """
 
 import json
@@ -19,8 +11,7 @@ import numpy as np
 
 import lab.paths
 
-# Relative angular noise levels tested by Siminski et al. (2014), Section 6.1:
-# sigma_alpha,delta in {0.7", 1.2", 2"}. Every run writes one noisy file per level.
+# Siminski et al. (2014) Section 6.1; one noisy chain per level.
 RELATIVE_NOISE_CASES_ARCSEC = [0.7, 1.2, 2.0]  # arcsec
 
 NOISY_VARIANTS = {
@@ -30,6 +21,20 @@ NOISY_VARIANTS = {
 
 # Every stage runs each of these as an independent chain.
 VARIANTS = ("clean", *NOISY_VARIANTS)
+
+# Row layout. Index rows by these names; test/test_dataset.py checks them
+# against the generator.
+SATELLITE_POSITION = slice(0, 3)    # km, truth: metrics only
+SATELLITE_VELOCITY = slice(3, 6)    # km/s, truth: metrics only
+RA_COLUMN = 6                       # rad, measured
+DEC_COLUMN = 7                      # rad, measured
+SITE_POSITION = slice(8, 11)        # km, GCRS
+SITE_VELOCITY = slice(11, 14)       # km/s, GCRS
+TIME_COLUMN = 14                    # s since the epoch
+TRACKLET_ID_COLUMN = 15
+OBJECT_ID_COLUMN = 16
+OBSERVATION_ID_COLUMN = 17
+NUM_COLUMNS = 18
 
 
 def data_file(variant):
@@ -41,8 +46,41 @@ def settings_file():
 
 
 def load_data(variant):
-    """The observation rows of one chain; see NUM_OF_OUTPUT_COLUMNS for the layout."""
-    return np.loadtxt(data_file(variant), delimiter=",", ndmin=2)
+    """The observation rows of one chain, in the layout above.
+
+    Raises if the file has a different column count, which means it came from
+    an older generator.
+    """
+    data = np.loadtxt(data_file(variant), delimiter=",", ndmin=2)
+    if data.shape[1] != NUM_COLUMNS:
+        raise ValueError(
+            f"{data_file(variant)} has {data.shape[1]} columns, expected "
+            f"{NUM_COLUMNS}; it was written by an older generator, regenerate it."
+        )
+    return data
+
+
+def tracklet_ids(data):
+    """Every (object_id, tracklet_id) in the rows, sorted."""
+    return sorted(set(zip(
+        data[:, OBJECT_ID_COLUMN].astype(int).tolist(),
+        data[:, TRACKLET_ID_COLUMN].astype(int).tolist(),
+    )))
+
+
+def tracklet_rows(data, object_id, tracklet_id):
+    """One tracklet's rows, in time order.
+
+    Sorted because interpolating the site to t0 (np.interp) needs increasing
+    times, and the file order is the generator's choice, not a guarantee.
+    """
+    rows = data[
+        (data[:, OBJECT_ID_COLUMN].astype(int) == object_id)
+        & (data[:, TRACKLET_ID_COLUMN].astype(int) == tracklet_id)
+    ]
+    if len(rows) == 0:
+        raise KeyError(f"no rows for object {object_id} tracklet {tracklet_id}")
+    return rows[np.argsort(rows[:, TIME_COLUMN], kind="stable")]
 
 
 def load_settings():

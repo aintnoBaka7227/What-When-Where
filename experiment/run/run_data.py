@@ -8,6 +8,7 @@ import json
 
 import numpy as np
 
+from lab.data.dataset import OBJECT_ID_COLUMN, tracklet_ids
 from lab.evaluation.metrics import data_metrics
 from lab.runner import execute, run_script, write_metrics
 
@@ -27,18 +28,15 @@ def dataset_summary(output_dir):
             "systematic_noise_arcsec",
         )
     }
-    summary["objects"] = int(data[:, 16].max()) + 1
-    summary["tracklets"] = len(
-        set(zip(data[:, 16].astype(int), data[:, 15].astype(int)))
-    )
+    summary["objects"] = int(data[:, OBJECT_ID_COLUMN].max()) + 1
+    summary["tracklets"] = len(tracklet_ids(data))
     summary["rows"] = int(data.shape[0])
     return summary
 
 
 def run(objects, force=False):
     def body(tee, output_dir, config):
-        # The generator appends exactly one object per invocation, so N
-        # objects means N runs.
+        # The generator appends one object per call.
         for _ in range(objects):
             if not run_script(tee, "src/lab/data/gcrs_data_generation.py", output_dir):
                 return False

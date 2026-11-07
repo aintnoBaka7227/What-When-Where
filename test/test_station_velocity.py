@@ -1,36 +1,19 @@
-"""Validation suite for the station velocity in src/lab/data/gcrs_data_generation.py.
-
-Run directly:
+"""Tests for the station velocity in src/lab/data/gcrs_data_generation.py.
 
     uv run python test/test_station_velocity.py
 
-The generator places each station by attaching a GCRS point to the rotating
-Earth (`fix_station_to_earth`, via ITRS) and then reads the station's GCRS
-position and velocity at every observation (`station_gcrs_state`). That
-velocity is the r_s-dot term of Siminski et al. (2014) Eq. (6), so an error in
-it goes straight into the modelled angular rates.
+The velocity is Eq. (6)'s r_s-dot, so errors go straight into the modelled
+rates. Each check uses an independent reference:
 
-Nothing here computes an expected value by calling the code under test. Each
-check compares astropy's velocity against something derived independently:
+  1. Rigid rotation      |v| = omega_E * distance from the spin axis.
+  2. Geometry            v horizontal, eastward, along omega x r.
+  3. Position closure    v matches a finite difference of the positions.
+  4. Use in Eq. (6)      Rates built with v match the observed angle rates,
+                         and would not without it.
+  5. Generated data      The same physics on generated rows.
 
-  1. Rigid rotation      |v| = omega_E * (distance from Earth's spin axis),
-                         using the station's fixed ITRS coordinates and the
-                         IERS nominal rotation rate. Catches unit errors
-                         (m vs km), a missing velocity, or a wrong magnitude.
-  2. Geometry            v is horizontal (v . r = 0), eastward, and lies along
-                         omega x r. Catches sign and orientation errors.
-  3. Position closure    v equals the finite difference of the station's own
-                         positions. Ties the velocity to the positions the
-                         generator writes, which is what Eq. (6) assumes.
-  4. Use in Eq. (6)      Topocentric RA/Dec rates built from v_site match the
-                         finite-difference rates of the observed angles, and
-                         would not match without it.
-  5. Generated data      The same physical checks on rows from the generator,
-                         written to a temporary folder.
-
-Edge cases: stations at the poles (speed ~0), the equator (maximum speed),
-the antimeridian, an elevated station, the geocentre, a time step across the
-2012-06-30 leap second, and a full sidereal day of rotation.
+Edge cases: poles, equator, antimeridian, altitude, geocentre, the
+2012-06-30 leap second and a full sidereal day.
 """
 
 import tempfile
@@ -53,9 +36,7 @@ from lab.data.gcrs_data_generation import (
 )
 
 
-# IERS nominal mean angular velocity of the Earth, rad/s. Independent of
-# astropy's own Earth-orientation model; length-of-day variations change the
-# true rate by ~1e-8 relative, far inside the tolerances below.
+# IERS nominal Earth rotation rate, rad/s, independent of astropy's model.
 OMEGA_EARTH = 7.292115e-5
 
 # Epoch the generator uses for measurement_time = 0.
@@ -66,25 +47,16 @@ ZIMMERWALD = EarthLocation.from_geodetic(
     lon=7.465 * u.deg, lat=46.877 * u.deg, height=951.0 * u.m
 )
 
-# Relative agreement required between astropy's speed and omega_E * rho.
-# The reference measures rho from the ITRS z axis, but Earth actually spins
-# about the CIP, which polar motion tilts ~0.3" (1.5e-6 rad) from ITRS z. That
-# shifts rho by ~R * 1.5e-6 * sin(lat), a relative error ~1.5e-6 * tan(lat):
-# measured 2e-8 at the equator, 2e-6 at 45 deg, 1.2e-5 at 80 deg. The
-# tolerance follows that, with headroom; a unit or sign error is off by
-# orders of magnitude.
+# Speed tolerance. Polar motion tilts the spin axis ~1.5e-6 rad from ITRS z,
+# a relative error ~1.5e-6 tan(lat), so the tolerance widens with latitude.
 SPEED_REL_TOL = 1.0e-6
 POLAR_MOTION_RAD = 3.0e-6
 
-# Finite-difference half step, s. The truncation error (omega*dt)^2 / 6 is
-# ~1e-9 relative at 1 s, below float64 noise on positions differenced at
-# Earth-radius scale.
+# Finite-difference half step, s: truncation ~1e-9 relative.
 FD_HALF_STEP_S = 1.0
 FD_REL_TOL = 1.0e-6
 
-# The GCRS z axis and Earth's spin axis differ by precession-nutation, about
-# 0.17 deg in 2012, so the direction check against omega_E z-hat x r allows
-# 0.5 deg. A reversed or rotated velocity is off by tens of degrees or 180.
+# GCRS z is ~0.17 deg from the spin axis in 2012 (precession-nutation).
 DIRECTION_TOL_DEG = 0.5
 
 
@@ -210,9 +182,7 @@ def test_fix_station_to_earth_reproduces_the_chosen_point():
 
 
 def test_fix_station_to_earth_gives_a_rotating_station():
-    # The ITRS round trip is what makes the station move; a station left in
-    # GCRS would have zero velocity. Check the attached station's velocity
-    # against rigid rotation and against its own positions.
+    # The ITRS round trip is what makes the station move.
     chosen_m = np.array([-2.0e6, 5.5e6, 2.5e6])
     chosen_m *= 6378.1e3 / np.linalg.norm(chosen_m)
     station = fix_station_to_earth(chosen_m, EPOCH)
@@ -357,9 +327,8 @@ def test_geocentre_has_zero_velocity():
 
 
 def test_velocity_is_continuous_across_leap_second():
-    # A leap second was inserted at 2012-06-30T23:59:60 UTC. Astropy's time
-    # arithmetic steps in SI seconds, so the station's motion over the step
-    # must stay a smooth rotation, not jump by a second's worth (~0.4 km).
+    # Across the 2012-06-30 leap second the motion must stay smooth, not jump
+    # by a second's worth (~0.4 km).
     time = Time("2012-06-30T23:59:59.5", scale="utc")
     _, v_before = station_gcrs_state(ZIMMERWALD, time - 1.0 * u.s)
     _, v_after = station_gcrs_state(ZIMMERWALD, time + 1.0 * u.s)
@@ -409,9 +378,7 @@ def test_generated_data_station_velocity():
     speed = np.linalg.norm(v_site, axis=1)
     radial = np.einsum("ij,ij->i", v_site, r_site) / radius
 
-    # Expected speed from the row's own position: omega_E * distance from the
-    # spin axis. Using the GCRS z axis here ignores the 0.17 deg pole tilt,
-    # which changes rho by at most R * 0.003 -- hence the looser tolerance.
+    # Uses the GCRS z axis, ignoring the 0.17 deg pole tilt: looser tolerance.
     rho = np.hypot(r_site[:, 0], r_site[:, 1])
     speed_error = np.abs(speed - OMEGA_EARTH * rho) / (OMEGA_EARTH * radius)
 
