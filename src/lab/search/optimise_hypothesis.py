@@ -1,34 +1,19 @@
-"""Minimize the discriminator loss over a range hypothesis (Eq. 30-31).
+"""Stage 8: minimise the loss over the admissible region, Eqs. (30)-(31).
 
-For a fixed k, find
+    p_k = argmin_{p in C} L(p, k),   p = (rho_1, rho_2)            Eq. (30)
+    rho_i* = -c_i + sqrt(c_i^2 + a(k)^2 - ||r_s_i||^2)           Eq. (31)
 
-    p_k_min = argmin_{p in C} L(p, k)                                  Eq. (30)
+C is each rho_i's [rho_min_i, rho_max_i] (Eq. 22). The search starts at the
+circular-orbit seed rho*. As printed, a(k) is undefined at k = 0 and k covers
+a range of revolutions, [k, k + 0.5); a(k) here comes from the middle of the
+part of that range the population allows (semi_major_axis_for_k).
 
-where p = (rho_1, rho_2), C is the admissible region (Eq. 22, i.e. each
-rho_i confined to src/lab/hypothesis/range_bounds.py's [rho_min_i, rho_max_i]), and
-L is src/lab/scoring/discriminator_loss.py's loss. The search is seeded from
-the circular-orbit initial guess
+With several Lambert candidates (M > 0) the objective takes the smallest
+loss at each trial point.
 
-    rho_i* = -c_i + sqrt(c_i^2 + a(k)^2 - ||r_s_i||^2)                 Eq. (31)
-
-using a semi-major axis a(k) from Kepler's third law. As printed a(k) is
-ill-defined at k = 0, and each k spans a *range* of swept revolutions,
-[k, k+0.5) per Eqs. (29)-(30). This uses the bin midpoint k + 0.25, with
-k = 0 falling back to the population midpoint -- see
-semi_major_axis_for_k().
-
-discriminator_loss() returns one loss per Lambert candidate (the vacant-
-focus ambiguity for M > 0, see src/lab/model/lambert.py). The optimizer reduces
-that to a scalar via min() at every trial point, letting the search pick
-whichever candidate fits best rather than committing to one branch label
-across possibly-different trial points.
-
-The paper specifies quasi-Newton search with numerically approximated
-derivatives when no analytic gradient is known (Section 5.2) -- exactly
-what scipy.optimize.minimize(method="L-BFGS-B") does without an explicit
-`jac`, so no analytic gradient of L is derived here. Its finite-difference
-step and tolerances are set explicitly (see _MINIMIZER_OPTIONS); the
-defaults under-resolve the loss valley and stop the search early.
+The search is scipy's L-BFGS-B with a finite-difference gradient: the
+quasi-Newton method with numerical derivatives of Section 5.2. Its step and
+tolerances are set in _MINIMIZER_OPTIONS; the defaults stop early.
 """
 
 
@@ -53,29 +38,18 @@ from lab.model.build_orbit import (
 from lab.model.lambert import LambertNoSolution
 from lab.scoring.discriminator_loss import LOSS_FUNCTIONS, evaluate_loss
 
-# km^3/s^2, matches the rest of the project.
+# km^3/s^2, as in the generator.
 MU = GM_earth.value / 1_000_000_000.0
 
-# A trial hypothesis that fails to produce any Lambert solution is heavily
-# penalized (rather than raising out of the optimizer) so L-BFGS-B can step
-# away from it instead of crashing the search.
+# Score for a trial point with no Lambert solution, so the search keeps
+# running. Flat, so a search seeded inside an infeasible region stays there.
 _INFEASIBLE_PENALTY = 1.0e12
 
-# L-BFGS-B options for the Eq. (30) search over p = (rho_1, rho_2).
-#
-# The defaults fail here. `eps` -- the finite-difference step for the
-# numerical gradient -- defaults to ~1e-8, so on ranges of ~4e4 km the
-# gradient is probed across a step 12 orders of magnitude too small and
-# comes back as rounding noise. L-BFGS-B then "converges" two iterations
-# from the circular-orbit seed, thousands of times above the true minimum
-# (src/lab/evaluation/validate_optimiser.py demonstrates this). A 1 km step
-# resolves the loss valley, which stays ~500 km wide even for the
-# ill-conditioned near-180-degree transfers. ftol/gtol are tightened to
-# match and maxiter is raised so the tighter tolerances have room to run.
-#
-# This `eps` is unrelated to the `eps` argument threaded through to
-# discriminator_loss for the Eq. (19) Jacobian -- different finite
-# difference, over a different variable.
+# scipy's default gradient step (~1e-8) is lost in rounding on ~4e4 km ranges,
+# so the search "converges" near the seed, far above the minimum (see
+# evaluation/validate_optimiser.py). 1 km resolves the loss valley, which is
+# ~500 km wide even near 180 deg transfers. ftol, gtol and maxiter match.
+# Not the same eps as the Eq. (19) Jacobian's.
 _MINIMIZER_OPTIONS = {
     "eps": 1.0,
     "ftol": 1.0e-11,
@@ -91,18 +65,16 @@ def semi_major_axis_for_k(
     a_min=A_MIN,
     a_max=A_MAX,
 ):
-    """Calculate an admissible circular-orbit seed a(k)."""
+    """Semi-major axis for the Eq. (31) seed; raises if k is unreachable."""
     delta_t = abs(delta_t)
 
     if delta_t == 0.0:
         raise ValueError("Tracklet epochs must be different")
 
-    # Calculate periods at the allowed semi-major-axis boundaries.
     period_a_min = 2.0 * np.pi * np.sqrt(a_min**3 / mu)
     period_a_max = 2.0 * np.pi * np.sqrt(a_max**3 / mu)
 
-    # k labels [k, k + 0.5), not one exact revolution count.
-    # Use the midpoint of the part overlapping [a_min, a_max].
+    # The part of [k, k + 0.5) that [a_min, a_max] allows.
     revolutions_min = delta_t / period_a_max
     revolutions_max = delta_t / period_a_min
 
@@ -114,9 +86,10 @@ def semi_major_axis_for_k(
             f"k={k} does not overlap [{a_min}, {a_max}] km"
         )
 
-    eps = 1e-3 * (upper - lower)
-
-    revolutions_star = np.clip(k,lower + eps,upper - eps,)
+    # Its midpoint, k + 0.25 when all of it is allowed: a 90 or 270 deg
+    # transfer, away from where Lambert degenerates. The old lower-edge seed
+    # (near 0 deg) left about 1 in 6 true-k searches on the penalty.
+    revolutions_star = 0.5 * (lower + upper)
     period = delta_t / revolutions_star
 
     a_k = (
@@ -135,15 +108,13 @@ def semi_major_axis_for_k(
 def circular_orbit_initial_guess(
     k, delta_t, c_1, r_s1, c_2, r_s2, mu=MU, a_min=A_MIN, a_max=A_MAX,
 ):
-    """Equation (31): rho_i* assuming a circular orbit of semi-major axis a(k)."""
+    """Eq. (31): (rho_1*, rho_2*) for a circular orbit of radius a(k)."""
     a_k = semi_major_axis_for_k(k, delta_t, mu, a_min, a_max)
 
     r_s1_norm_sq = np.dot(r_s1, r_s1)
     r_s2_norm_sq = np.dot(r_s2, r_s2)
 
-    # Clipped at 0 defensively: for a(k) implausibly close to the site
-    # distance the radicand can go slightly negative from floating point
-    # error; the resulting rho* is only ever used as a search seed.
+    # Clipped at 0 against rounding; this is only a seed.
     rho_1_star = -c_1 + np.sqrt(max(c_1**2 + a_k**2 - r_s1_norm_sq, 0.0))
     rho_2_star = -c_2 + np.sqrt(max(c_2**2 + a_k**2 - r_s2_norm_sq, 0.0))
 
@@ -171,48 +142,15 @@ def optimize_hypothesis(
     c_2, r_s2, v_s2, t2, rho_2_bounds, attributable_2, ca_2,
     mu=MU, eps=1e-6, a_min=A_MIN, a_max=A_MAX, history=None,
 ):
-    """Equation (30): minimize L(p, k) over p = (rho_1, rho_2) in C, for one k.
+    """Eq. (30) for one fixed k.
 
-    Parameters
-    ----------
-    variant : str
-        Which dataset chain is being scored, one of VARIANTS. Selects
-        the loss: the noisy chain uses the covariance-weighted Eq. (18),
-        the clean chain the unweighted residual (see
-        src/lab/scoring/discriminator_loss.py).
-    k : float
-        Revolutions/path parameter (fixed for this search -- Eq. 30 is
-        solved once per admissible k, not jointly over k).
-    delta_t : float
-        t2 - t1 (s), for the Eq. 31 initial guess.
-    c_1, c_2 : float
-        r_s_i . u_i (src/lab/hypothesis/range_bounds.py), for the Eq. 31 guess.
-    r_s1, r_s2 : array-like, shape (3,)
-        Site positions (km) at t1, t2.
-    v_s1, v_s2 : array-like, shape (3,)
-        Site velocities (km/s) at t1, t2.
-    t1, t2 : float
-        Observation epochs (s).
-    rho_1_bounds, rho_2_bounds : (float, float)
-        (rho_min_i, rho_max_i) -- the admissible region C (Eq. 22).
-    attributable_1, attributable_2 : array-like, shape (4,)
-        [alpha, alpha_dot, delta, delta_dot] per tracklet.
-    ca_1, ca_2 : array-like, shape (4, 4)
-        Attributable covariance per tracklet.
-    history : list, optional
-        If given, every objective evaluation L-BFGS-B makes is appended as
-        (rho_1, rho_2, loss), in call order. The seed is the first entry.
-        Used by src/lab/evaluation/validate_optimiser.py to check the search
-        actually descended rather than stalling on its first step.
+    variant selects the loss. Per tracklet: c = r_s . u, site position and
+    velocity, epoch, (rho_min, rho_max) bounds, attributable and Ca.
 
-    Returns
-    -------
-    rho_1_opt, rho_2_opt : float
-        The minimizing range hypothesis for this k.
-    loss_opt : float
-        L(p_opt, k).
-    result : scipy.optimize.OptimizeResult
-        The full L-BFGS-B result, for inspecting convergence.
+    history, if given, collects every evaluation as (rho_1, rho_2, loss),
+    seed first.
+
+    Returns (rho_1_opt, rho_2_opt, loss_opt, scipy OptimizeResult).
     """
     rho_1_0, rho_2_0 = circular_orbit_initial_guess(
         k, delta_t, c_1, r_s1, c_2, r_s2, mu, a_min, a_max,
@@ -246,20 +184,10 @@ def best_k_hypothesis(
     c_2, r_s2, v_s2, t2, rho_2_bounds, attributable_2, ca_2,
     mu=MU, eps=1e-6, a_min=A_MIN, a_max=A_MAX, trace=None,
 ):
-    """Equation (30) over the full k grid: the paper's actual association test.
+    """Eq. (30) over the whole k grid: (k_opt, rho_1_opt, rho_2_opt, loss_opt).
 
-    Runs optimize_hypothesis for every k in {k_min, k_min+0.5, ..., k_max}
-    and returns the one with the smallest min-loss -- the overall best-fit
-    orbit hypothesis for this tracklet pair, independent of k.
-
-    If trace is given, each search appends (k, seed loss, final loss,
-    iterations, loss evaluations) to it, to show whether the search worked.
-
-    Returns
-    -------
-    k_opt : float
-    rho_1_opt, rho_2_opt : float
-    loss_opt : float
+    trace, if given, collects (k, seed loss, final loss, iterations,
+    evaluations) per k.
     """
     best = None
     for k in k_grid(k_min, k_max):
@@ -279,21 +207,11 @@ def best_k_hypothesis(
 
 
 def run_association_test(variant):
-    """Run the full Eq. (30) all-vs-all association test for one chain.
+    """Search every pair of one chain; save the results and per-k trace.
 
-    Returns
-    -------
-    true_losses, false_losses : list of float
-        Optimized L* for the same-object and different-object pairs, kept
-        separate so the caller can report the separation between them.
+    Returns (true_losses, false_losses), split by object_id equality.
     """
-    # --- Demo: run the full Eq. (30) association test over every tracklet
-    # pair, and check the result against ground truth (object_id equality)
-    # -- the first end-to-end test of whether this method actually works,
-    # now that every stage from raw measurements to a real (not
-    # placeholder-range) optimized loss exists. ---
-    # The seed must span the same population the range bounds do, or it
-    # lands outside [rho_min, rho_max] and gets clipped to a box corner.
+    # The seed must use the bounds' population, or it is clipped to a corner.
     a_min, a_max, _ = population_for(variant)
 
     data = load_data(variant)
@@ -390,10 +308,8 @@ def run_association_test(variant):
 
 
 if __name__ == "__main__":
-    # Both chains are scored end to end. Their L* values are NOT comparable
-    # across chains -- the clean chain's unweighted loss is in rad^2/s^2
-    # and the noisy chain's weighted loss is dimensionless -- so each is
-    # judged on its own true-vs-false separation.
+    # L* is not comparable across chains: clean is in arcsec^2/s^2, noisy is
+    # dimensionless.
     for variant in VARIANTS:
         if not (
             data_file(variant).exists()

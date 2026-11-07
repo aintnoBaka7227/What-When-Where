@@ -24,13 +24,9 @@ def figure_dir(run_id):
 
 
 def sweep(true_losses, false_losses, thresholds):
-    """FN and FP rate (percent) at each decision threshold.
+    """FN and FP (%) per threshold, accepting a pair when L* <= T.
 
-    The gate accepts a pair when its optimised loss L* <= T, so:
-      FN(T) = share of TRUE  pairs with L* >  T  (a real match rejected)
-      FP(T) = share of FALSE pairs with L* <= T  (an unrelated pair accepted)
-    Raising T lowers FN and raises FP; the paper picks T in the window that
-    keeps FP low while still accepting most true pairs.
+    FN(T): true pairs with L* > T.  FP(T): false pairs with L* <= T.
     """
     true_losses = np.asarray(true_losses, dtype=float)
     false_losses = np.asarray(false_losses, dtype=float)
@@ -40,25 +36,11 @@ def sweep(true_losses, false_losses, thresholds):
 
 
 def figure9(args):
-    """Reproduce Siminski et al. Fig. 9 (the sigma = 0.7" case) for this pipeline.
+    """Siminski et al. Fig. 9, boundary-value method, 0.7" case: FN and FP vs T.
 
-    Fig. 9 plots, against a decision threshold T applied to each tracklet
-    pair's optimised loss min L (= L*):
-
-        false negative (FN) rate = true pairs rejected  (L* > T)   -- accept if L* <= T
-        false positive (FP) rate = false pairs accepted (L* <= T)
-
-    as T is swept. The paper shows both the initial-value and boundary-value
-    formulations at three noise levels; this reimplementation only has the
-    boundary-value method, and its noisy chain is exactly the paper's 0.7"
-    case (0.7" relative + 5" systematic astrometric error), so one panel with
-    two curves is the faithful analogue.
-
-    --paper-range matches the paper's axis exactly. With the optimiser in its
-    current state some true pairs do not converge, so L* for those stays far
-    above 20 and FN plateaus well above zero -- that gap IS the finding, not a
-    plotting artefact. The auto (log) range shows where true and false losses
-    actually separate.
+    --paper-range uses the paper's linear 1-20 axis; true pairs the search
+    misses sit far above 20, so FN plateaus above zero there. The default
+    log axis spans the actual L* range.
     """
     output_dir = load_run(args.hash, "search")
     with np.load(output_dir / f"association_{args.variant}.npz") as archive:
@@ -75,14 +57,11 @@ def figure9(args):
           f"[{min(false_losses):.2e}, {max(false_losses):.2e}]")
 
     if args.paper_range:
-        # The paper's axis. L* is a chi-square-like quantity (4 d.o.f.), so
-        # O(1-20) is its meaningful band -- but only if the optimiser
-        # converged; unconverged pairs sit far outside it.
+        # L* is roughly chi-squared(4), so 1-20 is its useful band.
         thresholds = np.linspace(1.0, 20.0, 400)
         xscale = "linear"
     else:
-        # Span the actual L* range, log-spaced -- our false-pair losses are
-        # ~1e6+, so a linear 1-20 axis would show nothing happening.
+        # Log-spaced over the actual L*: false pairs reach ~1e6.
         lo = min(min(true_losses), min(false_losses))
         hi = max(max(true_losses), max(false_losses))
         thresholds = np.logspace(np.log10(lo), np.log10(hi), 500)
@@ -90,8 +69,7 @@ def figure9(args):
 
     fn, fp = sweep(true_losses, false_losses, thresholds)
 
-    # A perfect gate exists iff the worst true L* is below the best false
-    # L*; that (gap_lo, gap_hi) interval is where FN = FP = 0.
+    # FN = FP = 0 between the worst true and best false L*, if they separate.
     gap_lo, gap_hi = max(true_losses), min(false_losses)
     if gap_lo < gap_hi:
         print(f"  FN = FP = 0 for T in ({gap_lo:.3e}, {gap_hi:.3e})")
@@ -99,8 +77,7 @@ def figure9(args):
         print("  no threshold gives FN = FP = 0 "
               f"(worst true L* {gap_lo:.2e} >= best false L* {gap_hi:.2e})")
 
-    # FN and FP live on very different scales (FN 0-100 %, FP a few %), so
-    # they get their own y-axes -- as in the paper's twin-axis panels.
+    # Twin y-axes, as in the paper: FN and FP have very different scales.
     fig, ax_fn = plt.subplots(figsize=(7.0, 4.5))
     ax_fp = ax_fn.twinx()
 
