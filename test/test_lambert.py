@@ -1,45 +1,24 @@
-"""Validation suite for src/lab/model/lambert.py.
-
-Run directly:
+"""Tests for src/lab/model/lambert.py.
 
     uv run python test/test_lambert.py
 
-Every test exercises the real `lambert_boundary_value`. Nothing here
-reimplements the solver, and -- importantly -- nothing computes its expected
-value by calling the code under test. A test that asks the implementation to
-grade its own homework cannot fail.
+Expected values never come from the code under test.
 
-The layers, each catching what the one above cannot:
-
-  1. External reference   Curtis Example 5.2, published answers. The only
-                          ground truth from outside this repository. Catches
-                          units, mu, and gross convention errors.
-  2. Round-trip           Propagate a known orbit with two_body, feed the
-                          endpoints back, recover the velocity. Catches
-                          k-decoding and short/long-way errors.
-  3. Endpoint closure     EVERY candidate must connect r1 to r2 in tof. This
-                          is the definition of a Lambert solution, and it is
-                          the only check that validates the second
-                          multi-revolution candidate -- which the
-                          discriminator scores but the round-trip ignores.
-  4. Independent physics  The same closure check, integrating Newton's law
-                          with scipy instead of two_body. Depends on neither
-                          the solver's internals nor this project's
-                          propagator.
-  5. Structure            Candidates distinct and self-consistent; transfer
-                          angle matches what k claims.
-  6. Failure paths        Singular geometry, infeasible multi-revolution
-                          transfers, and near-singular geometry must be
-                          refused rather than silently fudged.
-
-Layers 3 and 4 check every candidate, not the best-matching one. A
-multi-revolution call returns two solutions and `optimize_hypothesis` takes
-the minimum loss over both, so a silently invalid second candidate could win
-and produce a confident wrong association.
+  1. External reference   Curtis Example 5.2.
+  2. Round trip           Recover a known orbit's velocities from its endpoints.
+  3. Endpoint closure     Every candidate flies r1 -> r2 in tof (two_body). The
+                          only check on the second multi-revolution candidate.
+  4. Independent physics  The same with scipy integrating Newton's law.
+  5. Structure            Candidates distinct, self-consistent, swept as k says.
+  6. Failure paths        Singular and infeasible geometry is refused.
+  7. The wrapper          What lambert.py adds over hapsira.core.iod.izzo:
+                          untouched velocities, branch chosen by geometry not
+                          by hapsira's `prograde` flag, one exception type.
 """
 
 
 import numpy as np
+from hapsira.core.iod import izzo as hapsira_izzo
 from scipy.integrate import solve_ivp
 
 from lab.model.lambert import (
@@ -50,19 +29,14 @@ from lab.model.lambert import (
 from lab.data.gcrs_data_generation import two_body, mu as MU
 
 
-# Endpoint closure tolerances. two_body and scipy both land well inside
-# these for a near-GEO transfer; they are loose enough to be stable across
-# platforms and tight enough that a 1 mm/s velocity error (a 45 m endpoint
-# miss) still fails.
+# Closure tolerances: stable across platforms, but a 1 mm/s error still fails.
 POSITION_TOL_KM = 1.0e-3
 VELOCITY_TOL_KM_S = 1.0e-5
 
 # Velocity agreement required when recovering a known orbit.
 TRUTH_TOL_KM_S = 1.0e-5
 
-# The k values exercised throughout, paired with a time of flight expressed
-# in orbital periods. The pipeline itself only reaches k = 1.0; going to 4.5
-# exercises the multi-revolution branch well past current use.
+# (k, time of flight in periods). Up to 4.5, well past what the pipeline uses.
 K_CASES = [
     (0.0, 0.35),   # zero revolutions, short way
     (0.5, 0.65),   # zero revolutions, long way
@@ -79,14 +53,10 @@ K_CASES = [
 # --------------------------------------------------------------------------
 
 def make_orbit(a_periapsis=42164.0, eccentricity=0.0, inclination_deg=45.0):
-    """Build a known orbit with r1 at periapsis.
+    """A known orbit with r1 at periapsis.
 
-    Scaling circular speed by sqrt(1 + e) with the velocity kept
-    perpendicular to r makes r a periapsis of an orbit with exactly that
-    eccentricity: vis-viva gives a = r / (1 - e), so a(1 - e) = r.
-
-    An inclined orbit keeps the geometry non-degenerate; e = 0 makes
-    revolutions land on exact whole periods, which is why the k cases use it.
+    Circular speed times sqrt(1 + e), perpendicular to r, gives periapsis r and
+    eccentricity e. e = 0 puts revolutions on whole periods.
     """
     inclination = np.deg2rad(inclination_deg)
 
@@ -139,12 +109,10 @@ def orbital_elements(r, v):
 
 
 def swept_angle(r1, r2, v1):
-    """True-anomaly sweep from r1 to r2, in the orbit's own direction.
+    """Swept angle r1 -> r2 in the orbit's own direction.
 
-    Deliberately does NOT call lambert._is_long_way(). The solver filters its
-    candidates with that function, so using it here would ask the
-    implementation to confirm its own answer -- an assertion that cannot
-    fail. This recomputes the geometry from the returned velocity instead.
+    Recomputed here rather than calling lambert._is_long_way, which the solver
+    itself uses to filter candidates.
     """
     h = np.cross(r1, v1)
     denominator = np.linalg.norm(r1) * np.linalg.norm(r2)
@@ -202,12 +170,7 @@ def test_round_trip_recovers_known_orbit():
 
 
 def test_round_trip_over_eccentric_orbits():
-    """Fuzz across the near-GEO population, including eccentric orbits.
-
-    The k cases above all use e = 0 so revolutions land on whole periods.
-    Nothing else would exercise eccentric geometry, which is what the
-    pipeline's own population (e up to 0.01) actually contains.
-    """
+    """Random near-GEO orbits with e up to 0.05; the k cases above are all circular."""
     rng = np.random.default_rng(20260821)
     failures = []
 
@@ -239,13 +202,10 @@ def test_round_trip_over_eccentric_orbits():
 # --------------------------------------------------------------------------
 
 def test_every_candidate_connects_the_endpoints():
-    """Each candidate must actually fly from r1 to r2 in tof.
+    """Each candidate must fly from r1 to r2 in tof.
 
-    This is what makes a solution a Lambert solution, and it is the only
-    check that validates the SECOND multi-revolution candidate. Without it a
-    candidate missing the target by tens of thousands of kilometres passes
-    every other assertion here: it is distinct from the first, it sweeps the
-    right way, and the first candidate still recovers truth.
+    The only check on the second multi-revolution candidate: a candidate that
+    misses r2 passes every other test here.
     """
     r1, v1_true, period = make_orbit()
 
@@ -273,12 +233,7 @@ def test_every_candidate_connects_the_endpoints():
 # --------------------------------------------------------------------------
 
 def test_every_candidate_closes_under_independent_integration():
-    """Repeat the closure check with scipy integrating Newton's law.
-
-    two_body generated r2 and also verifies it above, so a shared convention
-    error would cancel out. Integrating the equations of motion directly
-    removes that possibility.
-    """
+    """The closure check with scipy, so a convention error shared with two_body cannot cancel."""
     r1, v1_true, period = make_orbit()
 
     for k, period_multiplier in K_CASES:
@@ -382,14 +337,10 @@ def test_k_decoding():
 
 
 def test_non_half_integer_k_is_rejected():
-    """k must be a multiple of 0.5; anything else is a caller error.
+    """k must be a multiple of 0.5.
 
-    Note this does not test negative k. k_to_revolutions(-0.5) returns
-    (-1, True) -- a negative revolution count, which is meaningless -- but
-    lambert_boundary_value refuses it downstream, and src/lab/hypothesis/k_bounds.py
-    never produces a negative k. It is an unreachable input-validation gap,
-    not a live bug, so asserting on it here would be testing behaviour the
-    function does not promise.
+    Negative k is not tested: k_to_revolutions(-0.5) gives (-1, True), but no
+    stage produces a negative k and the solver refuses it.
     """
     for bad_k in [0.25, 1.3, 0.75]:
         try:
@@ -404,11 +355,7 @@ def test_non_half_integer_k_is_rejected():
 # --------------------------------------------------------------------------
 
 def test_exactly_180_degree_transfer_is_refused():
-    """Antipodal endpoints leave the orbital plane undefined.
-
-    Returning an arbitrary plane would be worse than failing, because
-    nothing downstream could tell the difference.
-    """
+    """Antipodal endpoints leave the plane undefined; an arbitrary answer would go unnoticed."""
     r1, _, period = make_orbit()
     r2 = -r1
 
@@ -451,12 +398,9 @@ def test_non_positive_time_of_flight_is_refused():
 
 
 def test_near_singular_geometry_is_refused_or_correct():
-    """Transfer angles approaching 180 degrees are ill-conditioned, not undefined.
+    """Near 180 deg the solver may refuse, but any answer must close.
 
-    The solver may legitimately refuse these. What it must not do is return a
-    solution that fails its own boundary conditions: the optimizer can walk
-    into this geometry, and a quietly wrong answer there would propagate into
-    a real association result.
+    The optimiser can walk into this geometry.
     """
     r1, v1_true, period = make_orbit()
 
@@ -481,6 +425,92 @@ def test_near_singular_geometry_is_refused_or_correct():
 
 
 # --------------------------------------------------------------------------
+# 7. what the wrapper adds over hapsira
+# --------------------------------------------------------------------------
+
+def _planar_pair(angle_deg, radius=42164.0):
+    """r1 on +x, r2 at angle_deg about +z (slightly out of plane)."""
+    angle = np.deg2rad(angle_deg)
+    r1 = np.array([radius, 0.0, 0.0])
+    r2 = radius * np.array([np.cos(angle), np.sin(angle), 0.1])
+    return r1, r2
+
+
+def test_hapsira_prograde_flag_does_not_mean_short_way():
+    """Why lambert.py classifies solutions itself.
+
+    hapsira's `prograde` is relative to the z axis: with r2 60 deg clockwise of
+    r1, prograde=True is the 300 deg long way. The wrapper must still return
+    the short way for k = 0.
+    """
+    r1, r2 = _planar_pair(-60.0)
+    tof = 0.17 * 86164.0
+
+    v1, _ = hapsira_izzo(MU, r1, r2, tof, 0, True, True, 35, 1e-8)
+    assert swept_angle(r1, r2, v1) > np.pi, "hapsira's prograde=True went the short way here"
+
+    (sol,) = lambert_boundary_value(MU, r1, r2, tof, k=0.0)
+    assert swept_angle(r1, r2, sol.v1) < np.pi
+    assert not sol.prograde, "the short way round is retrograde for this geometry"
+
+
+def test_short_way_is_returned_in_both_rotation_senses():
+    tof = 0.17 * 86164.0
+    for angle in (60.0, -60.0):
+        r1, r2 = _planar_pair(angle)
+        (sol,) = lambert_boundary_value(MU, r1, r2, tof, k=0.0)
+        (long_sol,) = lambert_boundary_value(MU, r1, r2, tof, k=0.5)
+        assert swept_angle(r1, r2, sol.v1) < np.pi, angle
+        assert swept_angle(r1, r2, long_sol.v1) > np.pi, angle
+        assert sol.prograde == (angle > 0) and long_sol.prograde == (angle < 0), angle
+
+
+def test_wrapper_returns_hapsira_velocities_unchanged():
+    """Every candidate is bit-identical to one raw hapsira call."""
+    rng = np.random.default_rng(7)
+    for _ in range(40):
+        r1, v1_true, period = make_orbit(
+            a_periapsis=rng.uniform(38000.0, 45000.0),
+            eccentricity=rng.uniform(0.0, 0.01),
+            inclination_deg=rng.uniform(0.0, 20.0),
+        )
+        tof = rng.uniform(0.1, 1.9) * period
+        r2, _ = two_body(MU, tof, r1, v1_true)
+        k = np.floor(2.0 * tof / period) / 2.0
+        M = int(k)
+
+        raw = []
+        for low_path in ((True,) if M == 0 else (True, False)):
+            for prograde in (True, False):
+                try:
+                    raw.append(hapsira_izzo(MU, r1, r2, tof, M, prograde, low_path, 35, 1e-8))
+                except (ValueError, RuntimeError):
+                    pass
+
+        for sol in lambert_boundary_value(MU, r1, r2, tof, k):
+            assert any(
+                np.array_equal(sol.v1, v1) and np.array_equal(sol.v2, v2) for v1, v2 in raw
+            ), f"k={k}: candidate not among hapsira's raw outputs"
+
+
+def test_hapsira_assert_becomes_lambert_no_solution():
+    """hapsira asserts tof > 0; the pipeline needs LambertNoSolution."""
+    r1, r2 = _planar_pair(60.0)
+    try:
+        hapsira_izzo(MU, r1, r2, 0.0, 0, True, True, 35, 1e-8)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("hapsira no longer asserts on tof = 0; revisit the wrapper guard")
+
+    try:
+        lambert_boundary_value(MU, r1, r2, 0.0, 0.0)
+    except LambertNoSolution:
+        return
+    raise AssertionError("tof = 0 did not raise LambertNoSolution")
+
+
+# --------------------------------------------------------------------------
 # runner
 # --------------------------------------------------------------------------
 
@@ -499,6 +529,10 @@ TESTS = [
     test_infeasible_multi_revolution_is_refused,
     test_non_positive_time_of_flight_is_refused,
     test_near_singular_geometry_is_refused_or_correct,
+    test_hapsira_prograde_flag_does_not_mean_short_way,
+    test_short_way_is_returned_in_both_rotation_senses,
+    test_wrapper_returns_hapsira_velocities_unchanged,
+    test_hapsira_assert_becomes_lambert_no_solution,
 ]
 
 

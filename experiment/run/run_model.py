@@ -1,10 +1,7 @@
-"""Stages [5] and [6]: candidate orbits and the angular rates they predict.
+"""Stages [5] and [6]: candidate orbits and their predicted rates.
 
-Solves Lambert for every tracklet pair and every k in its admissible grid, at
-the midpoint of each tracklet's range bounds, and saves one row per candidate
-orbit to model_<variant>.npz. The midpoint is an illustrative hypothesis, not
-the Eq. (31) seed or an optimised one: this shows the Model phase on its own,
-and is not an association test.
+For every pair and k, at the range-bound midpoints (an illustration, not the
+Eq. 31 seed), saves one row per candidate orbit to model_<variant>.npz.
 
     uv run python experiment/run/run_model.py --parent <hypothesis hash>
     uv run python experiment/run/run_model.py -n 4
@@ -54,8 +51,7 @@ def model_rows(pairs):
 
 def run(parent, force=False):
     def body(tee, output_dir, config):
-        # The stage modules read their file locations from lab.paths when first
-        # imported, so point it at this run before importing them.
+        # Stage paths read DATA_DIR when indexed, so import order is irrelevant.
         lab.paths.DATA_DIR = output_dir
         from lab.evaluation.validate_optimiser import _pair_inputs
         from lab.hypothesis.range_bounds import (

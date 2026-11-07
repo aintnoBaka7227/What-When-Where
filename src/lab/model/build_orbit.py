@@ -1,19 +1,7 @@
-"""Build boundary-value orbit hypotheses from ranged tracklet pairs.
+"""Stage 5: the candidate orbit for one hypothesis (rho_1, rho_2, k).
 
-Implements Equation (5) -- the geocentric position implied by a hypothesized
-range along a tracklet's fixed line-of-sight direction:
-
-    r(rho) = r_s + rho * u
-
-Given two tracklets' site positions, line-of-sight directions, and epochs
-(from src/lab/hypothesis/range_bounds.py), a range hypothesis p = (rho_1, rho_2),
-and a candidate revolutions/path parameter k (from src/lab/hypothesis/k_bounds.py),
-this module builds r_hat_1, r_hat_2 (Eq. 5's r_hat(rho) at t1 and t2) and
-delta_t = t2 - t1 (Eq. 29's notation), then hands them to this directory's
-lambert.py -- Section 5's "Orbit" step (Fig. 5). Lives in model/ because,
-like the paper, generating r_hat and r_hat_dot is considered part of orbit
-determination; the admissible-region bounds that (rho_1, rho_2, k)
-hypotheses are drawn *from* live in hypothesis/ instead.
+Eq. (5), r(rho) = r_s + rho u, at both epochs, then Lambert's problem
+(lambert.py) for the velocities: Section 5's "Orbit" step (Fig. 5).
 """
 
 
@@ -26,61 +14,34 @@ from lab.hypothesis.k_bounds import PRECISION_OUTPUT_FILES as K_BOUNDS_FILES
 from lab.data.dataset import VARIANTS
 from lab.hypothesis.range_bounds import PRECISION_OUTPUT_FILES as RANGE_BOUNDS_FILES
 
-# km^3/s^2, matches src/lab/data/gcrs_data_generation.py, src/lab/hypothesis/k_bounds.py.
+# km^3/s^2, as in the generator.
 MU = GM_earth.value / 1_000_000_000.0
 
 
 def position_from_range(r_s, u, rho):
-    """Equation (5): geocentric position implied by a range hypothesis."""
+    """Eq. (5)."""
     return np.asarray(r_s, dtype=np.float64) + rho * np.asarray(u, dtype=np.float64)
 
 
 def build_orbit(r_s_1, u_1, t1, rho_1, r_s_2, u_2, t2, rho_2, k, mu=MU):
-    """Solve the boundary-value orbit for one hypothesis p = (rho_1, rho_2, k).
+    """Lambert orbit through r_s + rho u at both epochs.
 
-    Orders the two tracklets by epoch internally, so callers do not need to
-    know in advance which one comes first.
-
-    Parameters
-    ----------
-    r_s_1, r_s_2 : array-like, shape (3,)
-        Observing-site geocentric positions (km) at each tracklet's
-        attributable epoch.
-    u_1, u_2 : array-like, shape (3,)
-        Line-of-sight unit vectors (src/lab/hypothesis/range_bounds.py's
-        calculate_u_i) at each tracklet's attributable epoch.
-    t1, t2 : float
-        Observation epochs (s), matching Eq. (14)'s z = (alpha_1, delta_1,
-        alpha_2, delta_2) and Eq. (29)'s delta_t = t2 - t1.
-    rho_1, rho_2 : float
-        Hypothesized topocentric ranges (km); together, the paper's
-        hypothesis variable p = (rho_1, rho_2).
-    k : float
-        Revolutions/path parameter from the admissible k grid
-        (src/lab/hypothesis/k_bounds.py).
+    The tracklets may be given in either order; they are sorted by epoch.
+    r_s (km) and u are each tracklet's site position and line of sight at
+    its epoch t (s); rho is the hypothesised range (km).
 
     Returns
     -------
     r_hat_1, r_hat_2 : ndarray, shape (3,)
-        Hypothesized geocentric positions (km), Eq. (5)'s r_hat(rho) at t1
-        and t2, returned in the order (earlier epoch, later epoch).
+        Positions (km), earlier epoch first.
     delta_t : float
-        t2 - t1 (s); always positive on return.
+        Positive, s.
     candidates : list of lambert.LambertSolution
-        Boundary-value Lambert solutions. Each holds the geocentric
-        velocities (v1, v2) = (r_hat_dot_1, r_hat_dot_2) at t1, t2 for one
-        candidate orbit, along with its geometric classification --
-        `prograde` (prograde vs retrograde motion), `long_way` (transfer
-        angle >180 deg vs <180 deg), and `low_path` (the multi-revolution
-        vacant-focus branch, or None when k's integer part is 0). See
-        this directory's lambert.lambert_boundary_value for why this can
-        have more than one entry.
+        One or two orbits; see lambert_boundary_value.
 
     Raises
     ------
     lambert.LambertNoSolution
-        If no two-body transfer connects r_hat_1 and r_hat_2 in delta_t at
-        revolution k.
     """
     if t1 > t2:
         r_s_1, u_1, t1, rho_1, r_s_2, u_2, t2, rho_2 = (
@@ -97,7 +58,7 @@ def build_orbit(r_s_1, u_1, t1, rho_1, r_s_2, u_2, t2, rho_2, k, mu=MU):
 
 
 def describe_solution(sol: LambertSolution):
-    """One-line human-readable classification of a lambert.LambertSolution."""
+    """e.g. "prograde, short-way, unique-path"."""
     direction = "prograde" if sol.prograde else "retrograde"
     path = "long-way" if sol.long_way else "short-way"
     if sol.low_path is None:
@@ -108,7 +69,7 @@ def describe_solution(sol: LambertSolution):
 
 
 def _lookup_tracklet(object_ids, tracklet_ids, object_id, tracklet_id):
-    """Find the row index for one (object_id, tracklet_id) in range_bounds arrays."""
+    """Row index of one (object_id, tracklet_id); raises unless exactly one."""
     matches = np.flatnonzero((object_ids == object_id) & (tracklet_ids == tracklet_id))
     if len(matches) != 1:
         raise ValueError(
@@ -119,19 +80,9 @@ def _lookup_tracklet(object_ids, tracklet_ids, object_id, tracklet_id):
 
 
 def demo_variant(variant):
-    """Demonstrate the range_bounds -> k_bounds -> hypothesis -> Lambert chain.
+    """Print the candidates at the range-bound midpoints, for every pair and k.
 
-    For each tracklet pair and each k in its admissible grid, this uses the
-    midpoint of each tracklet's [rho_min, rho_max] range bounds as a quick
-    illustrative (rho_1, rho_2) guess -- NOT the circular-orbit initial
-    guess of Eq. (31), which belongs to the optimizer stage and is not
-    implemented yet. This only confirms the pieces built so far connect
-    correctly end to end; it is not itself an association test.
-
-    Parameters
-    ----------
-    variant : str
-        Which dataset chain to demonstrate, one of VARIANTS.
+    A wiring check only: midpoints, not the Eq. (31) seed, and no association.
     """
     with np.load(RANGE_BOUNDS_FILES[variant]) as archive:
         rb_object_ids = archive["object_id"]
@@ -184,7 +135,7 @@ def demo_variant(variant):
 
 
 def main():
-    """Run the demo for the clean and the noisy chain."""
+    """Run the demo for every chain with bounds files."""
     for variant in VARIANTS:
         if not (RANGE_BOUNDS_FILES[variant].exists() and K_BOUNDS_FILES[variant].exists()):
             print(f"Skipping {variant}: bounds files missing")
