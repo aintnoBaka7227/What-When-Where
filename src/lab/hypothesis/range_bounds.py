@@ -1,74 +1,42 @@
-"""Calculate the topocentric-range bounds from Siminski et al.
+"""Stage 3: topocentric range bounds, Siminski et al. Eqs. (23)-(28).
 
-The notation and calculations follow Equations (23), (24), and (26)-(28):
+    ||r_min|| = a_min (1 - e_max)          ||r_max|| = a_max (1 + e_max)
+    c_i = r_s_i . u_i
+    rho_i = -c_i + sqrt(c_i^2 + ||r||^2 - ||r_s_i||^2)
 
-    ||r_min|| = a_min * (1 - e_max)
-    ||r_max|| = a_max * (1 + e_max)
-    c_i       = r_s_i dot u_i
-
-    rho_min_i = -c_i + sqrt(
-        c_i**2 + ||r_min||**2 - ||r_s_i||**2
-    )
-
-    rho_max_i = -c_i + sqrt(
-        c_i**2 + ||r_max||**2 - ||r_s_i||**2
-    )
-
-Here, rho_i is the topocentric range from the observing site to the object.
+Also the path registry for the derived files, which later stages import.
 """
 
 
 import numpy as np
 
-from lab.data.dataset import VARIANTS, data_file, load_data, population
-from lab.paths import DATA_DIR
+from lab.data.dataset import (
+    SITE_POSITION,
+    SITE_VELOCITY,
+    TIME_COLUMN,
+    VARIANTS,
+    data_file,
+    load_data,
+    population,
+    tracklet_rows,
+)
+from lab.paths import VariantFiles
 
-# Every stage from here down runs each chain in lab.data.dataset.VARIANTS
-# independently, so a result can always be compared against its own noise-free
-# counterpart.
-#
-# This module is the path authority for the derived files: the later stages
-# import these dictionaries rather than building paths themselves.
-ATTRIBUTABLES_FILES = {
-    variant: DATA_DIR / f"generated_attributables_{variant}.npz"
-    for variant in VARIANTS
-}
+# Resolved in lab.paths.DATA_DIR when indexed, not at import.
+ATTRIBUTABLES_FILES = VariantFiles("generated_attributables_{variant}.npz", VARIANTS)
+PRECISION_OUTPUT_FILES = VariantFiles("range_bounds_{variant}.npz", VARIANTS)
+ASSOCIATION_FILES = VariantFiles("association_{variant}.npz", VARIANTS)
+READABLE_OUTPUT_FILES = VariantFiles("range_bounds_{variant}.txt", VARIANTS)
 
-PRECISION_OUTPUT_FILES = {
-    variant: DATA_DIR / f"range_bounds_{variant}.npz"
-    for variant in VARIANTS
-}
-
-ASSOCIATION_FILES = {
-    variant: DATA_DIR / f"association_{variant}.npz"
-    for variant in VARIANTS
-}
-
-READABLE_OUTPUT_FILES = {
-    variant: DATA_DIR / f"range_bounds_{variant}.txt"
-    for variant in VARIANTS
-}
-
-# Default population limits. The stages go through population_for() instead:
-# E_MAX = 0.01 describes test case 'a' alone, and applying it to an eccentric
-# population silently puts the true range outside the region the optimizer may
-# search.
+# Defaults only. Stages use population_for(): E_MAX = 0.01 fits test case 'a'
+# alone, and would put an eccentric object's true range outside the bounds.
 A_MIN = 38_000.0
 A_MAX = 45_000.0
 E_MAX = 0.01
 
 
 def population_for(variant):
-    """The orbit population a dataset was actually generated from.
-
-    The generator records the semi-major axis and eccentricity limits its test
-    case sampled, so the admissible region (Eqs. 23-24) follows the data rather
-    than being pinned to one case. All chains share one population.
-
-    Returns
-    -------
-    a_min, a_max, e_max : float
-    """
+    """(a_min, a_max, e_max) the dataset was generated from, shared by all chains."""
     return population()
 
 
@@ -77,7 +45,7 @@ def calculate_r_min_r_max(
     a_max=A_MAX,
     e_max=E_MAX,
 ):
-    """Calculate ||r_min|| and ||r_max|| using Equations (23) and (24)."""
+    """Eqs. (23)-(24)."""
     r_min = a_min * (1.0 - e_max)
     r_max = a_max * (1.0 + e_max)
 
@@ -85,7 +53,7 @@ def calculate_r_min_r_max(
 
 
 def calculate_u_i(alpha_i, delta_i):
-    """Calculate the line-of-sight unit vector u_i from alpha_i and delta_i."""
+    """Line-of-sight unit vector from RA and Dec."""
     u_i = np.array([
         np.cos(delta_i) * np.cos(alpha_i),
         np.cos(delta_i) * np.sin(alpha_i),
@@ -101,7 +69,7 @@ def calculate_rho_bounds_i(
     r_min,
     r_max,
 ):
-    """Calculate rho_min_i and rho_max_i using Equations (26)-(28)."""
+    """Eqs. (26)-(28): (c_i, rho_min_i, rho_max_i)."""
     c_i = np.dot(r_s_i, u_i)
 
     rho_min_i = (
@@ -131,29 +99,24 @@ def r_s_i_at_epoch(
     tracklet_id,
     t0_i,
 ):
-    """Obtain the observing-site position r_s_i at attributable epoch t0_i."""
-    object_ids = data[:, 16].astype(int)
-    tracklet_ids = data[:, 15].astype(int)
+    """Site position at t0_i, interpolated linearly.
 
-    tracklet_i = data[
-        (object_ids == object_id)
-        & (tracklet_ids == tracklet_id)
-    ]
+    Exact for the generator's evenly sampled tracklets, whose mean time is the
+    middle observation.
+    """
+    return _site_at_epoch(data, object_id, tracklet_id, t0_i, SITE_POSITION)
 
-    order = np.argsort(tracklet_i[:, 14])
-    times_i = tracklet_i[order, 14]
-    r_s_observations_i = tracklet_i[order, 8:11]
 
-    r_s_i = np.array([
-        np.interp(
-            t0_i,
-            times_i,
-            r_s_observations_i[:, axis],
-        )
+def _site_at_epoch(data, object_id, tracklet_id, t0_i, columns):
+    """Interpolate one tracklet's site columns to t0_i, axis by axis."""
+    tracklet_i = tracklet_rows(data, object_id, tracklet_id)
+    times_i = tracklet_i[:, TIME_COLUMN]
+    values_i = tracklet_i[:, columns]
+
+    return np.array([
+        np.interp(t0_i, times_i, values_i[:, axis])
         for axis in range(3)
     ])
-
-    return r_s_i
 
 
 def v_s_i_at_epoch(
@@ -162,48 +125,12 @@ def v_s_i_at_epoch(
     tracklet_id,
     t0_i,
 ):
-    """Obtain the observing-site velocity v_s_i at attributable epoch t0_i.
-
-    Sibling to r_s_i_at_epoch, used by src/lab/model/model_rates.py to form
-    the topocentric relative velocity rho_dot = v_sat - v_s needed for
-    Eq. (17)'s modeled angular rates. Not needed by this file's own range
-    bounds (Eqs. 26-28), which only use site position.
-    """
-    object_ids = data[:, 16].astype(int)
-    tracklet_ids = data[:, 15].astype(int)
-
-    tracklet_i = data[
-        (object_ids == object_id)
-        & (tracklet_ids == tracklet_id)
-    ]
-
-    order = np.argsort(tracklet_i[:, 14])
-    times_i = tracklet_i[order, 14]
-    v_s_observations_i = tracklet_i[order, 11:14]
-
-    v_s_i = np.array([
-        np.interp(
-            t0_i,
-            times_i,
-            v_s_observations_i[:, axis],
-        )
-        for axis in range(3)
-    ])
-
-    return v_s_i
+    """Site velocity at t0_i, for Eq. (17)'s topocentric rates (stages 6-8)."""
+    return _site_at_epoch(data, object_id, tracklet_id, t0_i, SITE_VELOCITY)
 
 
 def build_range_bounds(variant):
-    """Calculate the Siminski range bounds for every fitted tracklet.
-
-    Parameters
-    ----------
-    variant : str
-        Which dataset chain to process, one of VARIANTS. Only the
-        attributables differ between chains -- the site positions are
-        shared -- but each chain writes its own bounds file so the stages
-        below never have to know which one they are working on.
-    """
+    """Range bounds for every tracklet of one chain, written per chain."""
     data = load_data(variant)
 
     with np.load(ATTRIBUTABLES_FILES[variant]) as archive:
@@ -227,8 +154,7 @@ def build_range_bounds(variant):
         t0_values,
         attributables,
     ):
-        # Paper attributable ordering:
-        # A_i = [alpha_i, alpha_dot_i, delta_i, delta_dot_i]
+        # [alpha, alpha_dot, delta, delta_dot]
         alpha_i = attributable_i[0]
         delta_i = attributable_i[2]
 
@@ -260,7 +186,7 @@ def build_range_bounds(variant):
     rho_min_i_array = np.asarray(saved_rho_min_i)
     rho_max_i_array = np.asarray(saved_rho_max_i)
 
-    # Full-precision output for later optimisation.
+    # Canonical.
     np.savez(
         PRECISION_OUTPUT_FILES[variant],
         object_id=object_ids,
@@ -278,7 +204,7 @@ def build_range_bounds(variant):
         r_max_km=r_max,
     )
 
-    # Readable output for inspection.
+    # For reading only.
     readable_rows = np.column_stack((
         object_ids,
         tracklet_ids,
@@ -342,11 +268,7 @@ def build_range_bounds(variant):
 
 
 def available_variants():
-    """The variants whose inputs are both present on disk.
-
-    Each stage skips a variant it cannot run rather than failing outright,
-    so regenerating one chain never blocks the other.
-    """
+    """Chains whose inputs exist; the others are skipped, not failed."""
     return [
         variant
         for variant in VARIANTS

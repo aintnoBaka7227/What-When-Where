@@ -1,25 +1,12 @@
-"""Calculate the allowed revolutions/path parameter k bounds from Siminski et al.
+"""Stage 4: revolution-count bounds per tracklet pair, Siminski et al. Eq. (29).
 
-The notation and calculation follow Equation (29):
+    k = floor(2 dt / P(a)) / 2,   at a = a_min and a = a_max
 
-    k_min = floor(2 * Delta_t / P(a_min)) / 2
-    k_max = floor(2 * Delta_t / P(a_max)) / 2
+The paper's labels are reversed: P(a_min) is shorter, so a_min gives the
+larger k. Both values are computed and sorted.
 
-using the orbital period P(a) from Kepler's third law and the time interval
-between two tracklets' attributable epochs, Delta_t = t2 - t1.
-
-Note: period grows with semi-major axis, so P(a_min) < P(a_max). That means
-the raw value computed from a_min (more, shorter-period revolutions fit in
-the same Delta_t) is actually *larger* than the raw value computed from
-a_max, even though the paper labels them k_min and k_max respectively. This
-module computes both raw values and takes min()/max() to form the actual
-[k_min, k_max] range iterated over in Eq. (30), rather than trusting the
-paper's variable names literally.
-
-k is the same parameter consumed by src/lab/model/lambert.py's
-lambert_boundary_value(): its integer part is the number of full
-revolutions M, and its fractional part (0 or 0.5) selects the short-way or
-long-way transfer.
+k's integer part is the number of full revolutions; its fraction (0 or 0.5)
+selects the short-way or long-way transfer (see lambert.py).
 """
 
 from itertools import combinations
@@ -27,61 +14,33 @@ from itertools import combinations
 import numpy as np
 from astropy.constants import GM_earth
 
-from lab.paths import DATA_DIR
+from lab.paths import VariantFiles
 from lab.data.dataset import VARIANTS
 from lab.hypothesis.range_bounds import A_MIN, A_MAX, ATTRIBUTABLES_FILES, population_for
 
 
-# One k-bounds file per dataset chain, matching src/lab/hypothesis/range_bounds.py.
-# The k bounds depend only on the attributable epochs t0, which the clean and
-# noisy datasets share exactly, so the two files come out identical in
-# practice. They are still written separately: it keeps each chain
-# self-contained, and it stops being true the moment the two chains are
-# generated from different observation schedules.
-PRECISION_OUTPUT_FILES = {
-    variant: DATA_DIR / f"k_bounds_{variant}.npz"
-    for variant in VARIANTS
-}
+# k depends only on t0, which every chain shares, so these files are identical.
+# Each chain still gets its own, to stay self-contained.
+PRECISION_OUTPUT_FILES = VariantFiles("k_bounds_{variant}.npz", VARIANTS)
+READABLE_OUTPUT_FILES = VariantFiles("k_bounds_{variant}.txt", VARIANTS)
 
-READABLE_OUTPUT_FILES = {
-    variant: DATA_DIR / f"k_bounds_{variant}.txt"
-    for variant in VARIANTS
-}
-
-# km^3/s^2, matches src/lab/data/gcrs_data_generation.py's unit convention.
+# km^3/s^2, as in the generator.
 MU = GM_earth.value / 1_000_000_000.0
 
 
 def orbital_period(a, mu=MU):
-    """Orbital period from semi-major axis via Kepler's third law."""
+    """Kepler's third law."""
     return 2.0 * np.pi * np.sqrt(a**3 / mu)
 
 
 def calculate_k_bounds(delta_t, a_min=A_MIN, a_max=A_MAX, mu=MU):
-    """Calculate k_min and k_max for a tracklet pair using Equation (29).
-
-    Parameters
-    ----------
-    delta_t : float
-        Time interval between the two tracklets' attributable epochs (s).
-        Only the magnitude matters.
-    a_min, a_max : float
-        Allowed semi-major axis interval (km), Eq. (22).
-
-    Returns
-    -------
-    k_min, k_max : float
-        Admissible revolutions/path-parameter range, each a multiple of
-        0.5, for use in the k grid of Eq. (30):
-        {k_min, k_min + 0.5, ..., k_max}.
-    """
+    """Eq. (29): (k_min, k_max), multiples of 0.5, for |delta_t| in s."""
     delta_t = abs(delta_t)
 
     period_a_min = orbital_period(a_min, mu)
     period_a_max = orbital_period(a_max, mu)
 
-    # See module docstring: sort explicitly instead of trusting which of
-    # the two raw values the paper's naming implies is smaller.
+    # Sorted below: the paper's naming has them reversed.
     k_at_a_min = np.floor(2.0 * delta_t / period_a_min) / 2.0
     k_at_a_max = np.floor(2.0 * delta_t / period_a_max) / 2.0
 
@@ -92,27 +51,18 @@ def calculate_k_bounds(delta_t, a_min=A_MIN, a_max=A_MAX, mu=MU):
 
 
 def k_grid(k_min, k_max):
-    """Enumerate the admissible k values of Eq. (30): k_min, k_min+0.5, ..., k_max."""
+    """Eq. (30)'s k grid: k_min, k_min + 0.5, ..., k_max."""
     n_steps = int(round((k_max - k_min) * 2.0))
     return [k_min + 0.5 * i for i in range(n_steps + 1)]
 
 
 def build_k_bounds(variant):
-    """Calculate k bounds for every pair of tracklets in the attributables file.
+    """k bounds for every unordered tracklet pair of one chain.
 
-    All unordered pairs are considered, not just pairs within the same
-    object, matching the paper's all-vs-all association test (Section 6.1):
-    a real association pipeline does not know in advance which tracklets
-    belong together.
-
-    Parameters
-    ----------
-    variant : str
-        Which dataset chain to process, one of VARIANTS.
+    All pairs, not just same-object ones: the paper's all-vs-all test
+    (Section 6.1) is not told which tracklets belong together.
     """
-    # The same population the range bounds use. k comes from the orbital
-    # period, so only the semi-major axis limits matter here -- eccentricity
-    # does not enter Kepler's third law.
+    # Only a matters: eccentricity does not enter the period.
     a_min, a_max, _ = population_for(variant)
 
     with np.load(ATTRIBUTABLES_FILES[variant]) as archive:
@@ -123,17 +73,11 @@ def build_k_bounds(variant):
     pair_rows = []
 
     for i, j in combinations(range(len(t0_values)), 2):
-        # Stored as a magnitude, matching what calculate_k_bounds actually
-        # uses -- combinations() does not guarantee t0[i] < t0[j], and a
-        # signed value here would misleadingly suggest k_min/k_max (always
-        # >= 0) were computed from a negative time interval.
+        # A magnitude: combinations() does not order the epochs.
         delta_t = abs(t0_values[j] - t0_values[i])
 
-        # Two tracklets at the same epoch cannot be associated via
-        # Lambert's problem, which requires two distinct epochs. This can
-        # legitimately happen once multiple objects are simulated: every
-        # object shares the same start_epoch, so e.g. object 0's tracklet 0
-        # and object 1's tracklet 0 land at identical absolute times.
+        # Lambert needs two distinct epochs. Per-object start offsets make
+        # this unreachable for generated data; kept as a guard.
         if delta_t == 0.0:
             continue
 
@@ -186,7 +130,7 @@ def build_k_bounds(variant):
 
 
 def main():
-    """Calculate k bounds for the clean and the noisy chain."""
+    """k bounds for every chain whose attributables exist."""
     for variant in VARIANTS:
         if not ATTRIBUTABLES_FILES[variant].exists():
             print(f"Skipping {variant}: {ATTRIBUTABLES_FILES[variant]} does not exist")
